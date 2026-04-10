@@ -1,0 +1,246 @@
+/* ============================================= */
+/* 1. تعريف الألوان (المتغيرات) */
+/* ============================================= */
+
+:root {
+    /* 🌞 Light Mode Colors */
+    --cream: #FFF5E1;
+    --pink: #F8D7DA;
+    --lavender: #E6E6FA;
+    --primary: #F8BBD0;
+
+    --bg-color: #FFF5E1;
+    --text-color: #333;
+    --secondary-text: #777;
+    --card-bg: #ffffff;
+    --nav-bg: #ffffff;
+    --nav-text: #555;
+    --shadow: rgba(0,0,0,0.1);
+}
+
+/* 🌙 Dark Mode Colors */
+body.dark-mode {
+    --bg-color: #121212;
+    --text-color: #f1f1f1;
+    --secondary-text: #aaa;
+
+    /* --- التعديل المطلوب: تطابق ألوان الكروت والنافبار --- */
+    --nav-bg: #2c2c2c;
+    --card-bg: #2c2c2c; /* أصبحت مثل النافبار */
+
+    --nav-text: #dddddd;
+    --text-on-sakini: #f1f1f1; /* النصوص داخل الكرت تصبح فاتحة */
+
+    --pink: #c97a8d;
+    --lavender: #8e7cc3;
+    --primary: #c97a8d;
+    --shadow: rgba(0,0,0,0.4);
+}
+
+/* ============================================= */
+/* 2. التنسيقات العامة */
+/* ============================================= */
+
+body {
+    margin: 0;
+    font-family: 'Poppins', sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    transition: background-color 0.4s ease, color 0.4s ease;
+}
+
+a { text-decoration: none; color: inherit; }
+
+/* ============================================= */
+/* 3. تنسيق النافبار */
+/* ============================================= */
+
+.navbar {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 15px 20px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background-color: transparent;
+}
+
+.nav-left {
+    position: absolute;
+    left: 20px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    background-color: var(--nav-bg);
+    padding: 10px 15px;
+    border-radius: 30px;
+    box-shadow: 0 4px 10px var(--shadow);
+    transition: 0.4s;
+}
+
+.profile-icon {
+    font-size: 18px;
+    cursor: pointer;
+    color: var(--nav-text);
+}
+
+.nav-center {
+    display: flex;
+    align-items: center;
+    list-style: none;
+    gap: 5px;
+    padding: 8px 10px;
+    margin: 0;
+    background-color: var(--nav-bg);
+    border-radius: 30px;
+    box-shadow: 0 4px 15px var(--shadow);
+    width: fit-content;
+    transition: 0.4s;
+}
+
+.nav-center li a {
+    text-decoration: none;
+    color: var(--nav-text);
+    font-weight: 500;
+    font-size: 14px;
+    padding: 8px 15px;
+    border-radius: 20px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    transition: all 0.3s ease;
+}
+
+.nav-center li a:hover,
+.nav-center li a.active {
+    background-color: var(--pink);
+    color: #000;
+}
+
+/* ============================================= */
+/* 4. زر الدارك مود (Animated Toggle) */
+/* ============================================= */
+
+.theme-toggle {
+    cursor: pointer;
+    display: inline-block;
+}
+
+.theme-toggle input {
+    display: none; /* إخفاء الشيك بوكس الأصلي */
+}
+
+.toggle-track {
+    width: 55px;
+    height: 28px;
+    background: linear-gradient(135deg, #87CEEB, #fceabb);
+    border-radius: 50px;
+    position: relative;
+    transition: all 0.5s ease;
+    overflow: hidden;
+    border: 1px solid rgba(0,0,0,0.1);
+}
+
+.toggle-circle {
+    width: 22px;
+    height: 22px;
+    background: #fff;
+    border-radius: 50%;
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    transition: all 0.5s cubic-bezier(0.68, -0.55, 0.27, 1.55);
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+}
+
+/* 🌙 حالة الدارك مود (عند تفعيل الشيك بوكس) */
+.theme-toggle input:checked + .toggle-track {
+    background: linear-gradient(135deg, #2c3e50, #4a69bd);
+}
+
+.theme-toggle input:checked + .toggle-track .toggle-circle {
+    transform: translateX(27px);
+    /* لون القمر رمادي 808080 كما طلبت */
+    background: #dddddd;
+    box-shadow: 0 0 10px rgba(128, 128, 128, 0.6);
+}
+
+.theme-toggle input:checked + .toggle-track::before {
+    content: "✦";
+    position: absolute;
+    color: #fff;
+    font-size: 10px;
+    left: 10px;
+    top: 9px;
+    opacity: 0.9;
+    animation: twinkle 1.5s infinite alternate;
+}
+
+@keyframes twinkle {
+    from { opacity: 0.5; transform: scale(0.8); }
+    to { opacity: 1; transform: scale(1); }
+}
+
+/* ============================================= */
+/* 5. تنسيقات المحتوى (Hero & Products) */
+/* ============================================= */
+
+.hero {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 50px;
+    gap: 30px;
+}
+
+.hero-text h1 {
+    font-family: 'Playfair Display', serif;
+    font-size: 48px;
+    margin: 0 0 15px;
+    color: var(--text-color);
+}
+
+.btn-primary {
+    background-color: var(--primary);
+    color: #fff;
+    padding: 12px 25px;
+    border-radius: 25px;
+    font-weight: bold;
+    transition: all 0.3s ease;
+    display: inline-block;
+    border: none;
+    cursor: pointer;
+}
+
+.btn-primary:hover {
+    opacity: 0.9;
+    transform: translateY(-2px);
+}
+
+.product-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 25px;
+}
+
+.product-card {
+    background-color: var(--card-bg);
+    padding: 15px;
+    border-radius: 15px;
+    text-align: center;
+    box-shadow: 0 2px 6px var(--shadow);
+    transition: all 0.3s ease;
+}
+
+/* في الدارك مود: النصوص داخل الكرت تغير لونها للفاتح لتظهر على الخلفية الداكنة */
+body.dark-mode .product-card h3,
+body.dark-mode .product-card p {
+    color: #f1f1f1;
+}
+
+.product-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 10px 20px var(--shadow);
+}
+
