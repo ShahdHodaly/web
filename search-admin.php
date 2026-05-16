@@ -1,142 +1,209 @@
 <?php
 // search-admin.php
 session_start();
+require_once 'db.php';
 
-// تضمين جميع المصفوفات
-require_once 'products.php';
-require_once 'orders-array.php';
-require_once 'users-array.php';
-require_once 'reviews-array.php';
-require_once 'messages-array.php';
-require_once 'coupons-array.php';
+$pdo = getDB();
 
-function smartSearch($text, $query) {
-    return preg_match('/\b' . preg_quote($query, '/') . '\b/i', $text);
-}
 // معالجة البحث
 $query = isset($_GET['q']) ? trim($_GET['q']) : '';
 $type = isset($_GET['type']) ? trim($_GET['type']) : 'all';
 $results = [
-    'products' => [],
-    'orders' => [],
-    'users' => [],
-    'reviews' => [],
-    'messages' => [],
-    'coupons' => []
+        'products' => [],
+        'orders' => [],
+        'users' => [],
+        'reviews' => [],
+        'messages' => [],
+        'coupons' => []
 ];
 $totalResults = 0;
 
 // منطق البحث
 if (!empty($query)) {
+    $searchTerm = '%' . $query . '%';
 
-    // البحث في المنتجات
+    // ========== البحث في المنتجات ==========
     if ($type == 'all' || $type == 'products') {
-        foreach ($products as $id => $item) {
-            if (
-                    smartSearch($item['name'], $query) ||
-                    smartSearch($item['category'], $query) ||
-                    smartSearch($item['description'], $query)
-            ) {
-                $results['products'][$id] = $item;
-                $results['products'][$id]['_type'] = 'product';
-                $results['products'][$id]['_id'] = $id;
-                $totalResults++;
-            }
+        $stmt = $pdo->prepare("
+            SELECT 
+                p.product_id as id,
+                p.name,
+                p.description,
+                p.price,
+                p.image,
+                p.stock,
+                c.name as category,
+                'product' as _type
+            FROM products p
+            JOIN categories c ON p.category_id = c.category_id
+            WHERE p.name ILIKE ? 
+               OR c.name ILIKE ? 
+               OR p.description ILIKE ?
+        ");
+        $stmt->execute([$searchTerm, $searchTerm, $searchTerm]);
+        $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($products as $product) {
+            $product['_id'] = $product['id'];
+            $results['products'][] = $product;
+            $totalResults++;
         }
     }
 
-    // البحث في الطلبات
+    // ========== البحث في الطلبات ==========
     if ($type == 'all' || $type == 'orders') {
-        foreach ($orders as $id => $order) {
-            if (
-                    smartSearch($order['order_number'], $query) ||
-                    smartSearch($order['customer'], $query) ||
-                    smartSearch($order['customer_email'], $query) ||
-                    smartSearch($order['status'], $query)
-            ) {
-                $results['orders'][$id] = $order;
-                $results['orders'][$id]['_type'] = 'order';
-                $results['orders'][$id]['_id'] = $id;
-                $totalResults++;
-            }
+        $stmt = $pdo->prepare("
+            SELECT 
+                o.order_id as id,
+                o.order_number,
+                o.total,
+                o.status::text as status,
+                o.created_at as date,
+                u.name as customer,
+                u.email as customer_email,
+                'order' as _type
+            FROM orders o
+            JOIN users u ON o.user_id = u.user_id
+            WHERE o.order_number ILIKE ? 
+               OR u.name ILIKE ? 
+               OR u.email ILIKE ? 
+               OR o.status::text ILIKE ?
+        ");
+        $stmt->execute([$searchTerm, $searchTerm, $searchTerm, $searchTerm]);
+        $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($orders as $order) {
+            $order['_id'] = $order['id'];
+            $results['orders'][] = $order;
+            $totalResults++;
         }
     }
 
-    // البحث في المستخدمين
+    // ========== البحث في المستخدمين ==========
     if ($type == 'all' || $type == 'users') {
-        foreach ($users as $id => $user) {
-            if (
-                    smartSearch($user['name'], $query) ||
-                    smartSearch($user['email'], $query) ||
-                    smartSearch($user['role'], $query)
-            ) {
-                $results['users'][$id] = $user;
-                $results['users'][$id]['_type'] = 'user';
-                $results['users'][$id]['_id'] = $id;
-                $totalResults++;
-            }
+        $stmt = $pdo->prepare("
+            SELECT 
+                user_id as id,
+                name,
+                email,
+                role::text as role,
+                status::text as status,
+                created_at as joined,
+                'user' as _type
+            FROM users
+            WHERE name ILIKE ? 
+               OR email ILIKE ? 
+               OR role::text ILIKE ?
+        ");
+        $stmt->execute([$searchTerm, $searchTerm, $searchTerm]);
+        $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($users as $user) {
+            $user['_id'] = $user['id'];
+            $results['users'][] = $user;
+            $totalResults++;
         }
     }
 
-    // البحث في المراجعات
+    // ========== البحث في المراجعات ==========
     if ($type == 'all' || $type == 'reviews') {
-        foreach ($reviews as $id => $review) {
-            if (
-                    smartSearch($review['product_name'], $query) ||
-                    smartSearch($review['customer_name'], $query) ||
-                    smartSearch($review['comment'], $query)
-            ) {
-                $results['reviews'][$id] = $review;
-                $results['reviews'][$id]['_type'] = 'review';
-                $results['reviews'][$id]['_id'] = $id;
-                $totalResults++;
-            }
+        $stmt = $pdo->prepare("
+            SELECT 
+                r.review_id as id,
+                r.rating,
+                r.comment,
+                r.status::text as status,
+                r.helpful_count,
+                r.created_at as date,
+                u.name as customer_name,
+                p.name as product_name,
+                'review' as _type
+            FROM reviews r
+            JOIN users u ON r.user_id = u.user_id
+            JOIN products p ON r.product_id = p.product_id
+            WHERE p.name ILIKE ? 
+               OR u.name ILIKE ? 
+               OR r.comment ILIKE ?
+        ");
+        $stmt->execute([$searchTerm, $searchTerm, $searchTerm]);
+        $reviews = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($reviews as $review) {
+            $review['_id'] = $review['id'];
+            $results['reviews'][] = $review;
+            $totalResults++;
         }
     }
 
-    // البحث في الرسائل
+    // ========== البحث في الرسائل ==========
     if ($type == 'all' || $type == 'messages') {
-        foreach ($messages as $id => $message) {
-            if (
-                    smartSearch($message['sender_name'], $query) ||
-                    smartSearch($message['sender_email'], $query) ||
-                    smartSearch($message['subject'], $query) ||
-                    smartSearch($message['message'], $query)
-            ) {
-                $results['messages'][$id] = $message;
-                $results['messages'][$id]['_type'] = 'message';
-                $results['messages'][$id]['_id'] = $id;
-                $totalResults++;
-            }
+        $stmt = $pdo->prepare("
+            SELECT 
+                message_id as id,
+                sender_name,
+                sender_email,
+                subject,
+                message,
+                priority,
+                status,
+                created_at as date,
+                'message' as _type
+            FROM messages
+            WHERE sender_name ILIKE ? 
+               OR sender_email ILIKE ? 
+               OR subject ILIKE ? 
+               OR message ILIKE ?
+        ");
+        $stmt->execute([$searchTerm, $searchTerm, $searchTerm, $searchTerm]);
+        $messages = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($messages as $message) {
+            $message['_id'] = $message['id'];
+            $results['messages'][] = $message;
+            $totalResults++;
         }
     }
 
-    // البحث في الكوبونات
+    // ========== البحث في الكوبونات ==========
     if ($type == 'all' || $type == 'coupons') {
-        foreach ($coupons as $id => $coupon) {
-            if (
-                    smartSearch($coupon['code'], $query) ||
-                    smartSearch($coupon['description'], $query)
-            ) {
-                $results['coupons'][$id] = $coupon;
-                $results['coupons'][$id]['_type'] = 'coupon';
-                $results['coupons'][$id]['_id'] = $id;
-                $totalResults++;
-            }
+        $stmt = $pdo->prepare("
+            SELECT 
+                coupon_id as id,
+                code,
+                description,
+                discount_type,
+                discount_value,
+                status::text as status,
+                start_date,
+                expiry_date,
+                'coupon' as _type
+            FROM coupons
+            WHERE code ILIKE ? 
+               OR description ILIKE ?
+        ");
+        $stmt->execute([$searchTerm, $searchTerm]);
+        $coupons = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($coupons as $coupon) {
+            $coupon['_id'] = $coupon['id'];
+            $results['coupons'][] = $coupon;
+            $totalResults++;
         }
     }
 }
 
-// Pagination للنتائج
-$page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
-$perPage = 10;
+// دمج جميع النتائج في مصفوفة واحدة
 $allResults = [];
 foreach ($results as $category => $items) {
     foreach ($items as $item) {
         $allResults[] = $item;
     }
 }
-$totalPages = ceil($totalResults / $perPage);
+
+// Pagination للنتائج
+$page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+$perPage = 10;
+$totalPages = $totalResults > 0 ? ceil($totalResults / $perPage) : 1;
 $offset = ($page - 1) * $perPage;
 $paginatedResults = array_slice($allResults, $offset, $perPage);
 ?>
@@ -393,6 +460,11 @@ $paginatedResults = array_slice($allResults, $offset, $perPage);
             color: white;
             transform: scale(1.1);
         }
+        .page-item.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
 
         .no-results {
             text-align: center;
@@ -488,51 +560,52 @@ $paginatedResults = array_slice($allResults, $offset, $perPage);
                 <div class="results-container">
                     <?php foreach($paginatedResults as $item): ?>
                         <?php
-                        $type = $item['_type'];
-                        $id = $item['_id'];
+                        $resultType = $item['_type'];
+                        $resultId = $item['_id'];
                         $link = '';
                         $title = '';
                         $details = '';
+                        $icon = '';
 
-                        if ($type == 'product') {
-                            $link = "product_details-admin.php?id=$id";
+                        if ($resultType == 'product') {
+                            $link = "product_details-admin.php?id=$resultId";
                             $title = $item['name'];
-                            $details = "Category: " . $item['category'] . " | Price: $" . $item['price'];
+                            $details = "Category: " . ($item['category'] ?? 'N/A') . " | Price: $" . number_format($item['price'], 2);
                             $icon = "fa-box";
-                        } elseif ($type == 'order') {
-                            $link = "order-details-admin.php?id=$id";
+                        } elseif ($resultType == 'order') {
+                            $link = "order-details-admin.php?id=$resultId";
                             $title = $item['order_number'];
-                            $details = "Customer: " . $item['customer'] . " | Total: $" . $item['total'] . " | Status: " . ucfirst($item['status']);
+                            $details = "Customer: " . ($item['customer'] ?? 'N/A') . " | Total: $" . number_format($item['total'], 2) . " | Status: " . ucfirst($item['status']);
                             $icon = "fa-truck";
-                        } elseif ($type == 'user') {
-                            $link = "user-details.php?id=$id";
+                        } elseif ($resultType == 'user') {
+                            $link = "user-details.php?id=$resultId";
                             $title = $item['name'];
-                            $details = "Email: " . $item['email'] . " | Role: " . $item['role'] . " | Status: " . ucfirst($item['status']);
+                            $details = "Email: " . ($item['email'] ?? 'N/A') . " | Role: " . ucfirst($item['role']) . " | Status: " . ucfirst($item['status']);
                             $icon = "fa-user";
-                        } elseif ($type == 'review') {
-                            $link = "review-details.php?id=$id";
-                            $title = $item['product_name'];
-                            $details = "By: " . $item['customer_name'] . " | Rating: " . $item['rating'] . "★ | Status: " . ucfirst($item['status']);
+                        } elseif ($resultType == 'review') {
+                            $link = "review-details.php?id=$resultId";
+                            $title = $item['product_name'] ?? 'Product';
+                            $details = "By: " . ($item['customer_name'] ?? 'Anonymous') . " | Rating: " . ($item['rating'] ?? 0) . "★ | Status: " . ucfirst($item['status'] ?? 'pending');
                             $icon = "fa-star";
-                        } elseif ($type == 'message') {
-                            $link = "message-details.php?id=$id";
+                        } elseif ($resultType == 'message') {
+                            $link = "message-details.php?id=$resultId";
                             $title = $item['subject'];
-                            $details = "From: " . $item['sender_name'] . " | Date: " . date('M d, Y', strtotime($item['date'])) . " | Priority: " . ucfirst($item['priority']);
+                            $details = "From: " . ($item['sender_name'] ?? 'Unknown') . " | Date: " . date('M d, Y', strtotime($item['date'] ?? 'now')) . " | Priority: " . ucfirst($item['priority'] ?? 'medium');
                             $icon = "fa-envelope";
-                        } elseif ($type == 'coupon') {
-                            $link = "coupon-details.php?id=$id";
+                        } elseif ($resultType == 'coupon') {
+                            $link = "coupon-details.php?id=$resultId";
                             $title = $item['code'];
-                            $details = $item['description'] . " | Status: " . ucfirst($item['status']);
+                            $details = ($item['description'] ?? 'No description') . " | Status: " . ucfirst($item['status'] ?? 'active');
                             $icon = "fa-ticket";
                         }
                         ?>
                         <div class="result-card">
                             <div class="card-header">
-                                <span class="card-type type-<?= $type ?>">
+                                <span class="card-type type-<?= $resultType ?>">
                                     <i class="fa-solid <?= $icon ?>"></i>
-                                    <?= ucfirst($type) ?>
+                                    <?= ucfirst($resultType) ?>
                                 </span>
-                                <span style="font-size: 11px; color: var(--secondary-text);">ID: #<?= $id ?></span>
+                                <span style="font-size: 11px; color: var(--secondary-text);">ID: #<?= $resultId ?></span>
                             </div>
                             <div class="card-title"><?= htmlspecialchars($title) ?></div>
                             <div class="card-details"><?= htmlspecialchars($details) ?></div>
@@ -556,9 +629,27 @@ $paginatedResults = array_slice($allResults, $offset, $perPage);
                                 <span class="page-item disabled"><i class="fa-solid fa-chevron-left"></i></span>
                             <?php endif; ?>
 
-                            <?php for($i = 1; $i <= $totalPages; $i++): ?>
+                            <?php
+                            $startPage = max(1, $page - 2);
+                            $endPage = min($totalPages, $page + 2);
+
+                            if ($startPage > 1): ?>
+                                <a href="?q=<?= urlencode($query) ?>&type=<?= $type ?>&page=1" class="page-item">1</a>
+                                <?php if ($startPage > 2): ?>
+                                    <span class="page-item disabled">...</span>
+                                <?php endif; ?>
+                            <?php endif; ?>
+
+                            <?php for($i = $startPage; $i <= $endPage; $i++): ?>
                                 <a href="?q=<?= urlencode($query) ?>&type=<?= $type ?>&page=<?= $i ?>" class="page-item <?= $i == $page ? 'active' : '' ?>"><?= $i ?></a>
                             <?php endfor; ?>
+
+                            <?php if ($endPage < $totalPages): ?>
+                                <?php if ($endPage < $totalPages - 1): ?>
+                                    <span class="page-item disabled">...</span>
+                                <?php endif; ?>
+                                <a href="?q=<?= urlencode($query) ?>&type=<?= $type ?>&page=<?= $totalPages ?>" class="page-item"><?= $totalPages ?></a>
+                            <?php endif; ?>
 
                             <?php if ($page < $totalPages): ?>
                                 <a href="?q=<?= urlencode($query) ?>&type=<?= $type ?>&page=<?= $page + 1 ?>" class="page-item"><i class="fa-solid fa-chevron-right"></i></a>
@@ -608,6 +699,16 @@ $paginatedResults = array_slice($allResults, $offset, $perPage);
             this.style.transform = 'translateY(0)';
         });
     }
+
+    // Form validation - prevent empty search
+    document.getElementById('searchForm').addEventListener('submit', function(e) {
+        const query = document.getElementById('searchInput').value.trim();
+        if (!query) {
+            e.preventDefault();
+            alert('Please enter a search term');
+            return false;
+        }
+    });
 </script>
 
 <script>

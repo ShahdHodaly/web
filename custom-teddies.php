@@ -1,32 +1,61 @@
 <?php
 // custom-teddies.php
 session_start();
+require_once 'db.php';
 
-// بيانات تجريبية للملابس والإكسسوارات
-$clothesItems = [
-        1 => ['name' => 'Red Dress', 'category' => 'outfit', 'image' => 'reddress.png', 'price' => 12, 'type' => 'outfit'],
-        2 => ['name' => 'Pink Outfit', 'category' => 'outfit', 'image' => 'pinkoutfit.png', 'price' => 15, 'type' => 'outfit'],
-        3 => ['name' => 'Green Outfit', 'category' => 'outfit', 'image' => 'greenoutfit.png', 'price' => 14, 'type' => 'outfit'],
-        4 => ['name' => 'Jeans Outfit', 'category' => 'outfit', 'image' => 'jeansoutfit.png', 'price' => 13, 'type' => 'outfit'],
-        5 => ['name' => 'Red Shoes', 'category' => 'shoes', 'image' => 'redshoes.png', 'price' => 8, 'type' => 'shoes'],
-        6 => ['name' => 'Dark Boots', 'category' => 'shoes', 'image' => 'darkshoes.png', 'price' => 9, 'type' => 'shoes'],
-        7 => ['name' => 'Pink Shoes', 'category' => 'shoes', 'image' => 'pinkshoes.png', 'price' => 8, 'type' => 'shoes'],
-        8 => ['name' => 'Converse Shoes', 'category' => 'shoes', 'image' => 'conversshoes.png', 'price' => 10, 'type' => 'shoes'],
-        9 => ['name' => 'Red Bow', 'category' => 'accessory', 'image' => 'redacc.png', 'price' => 5, 'type' => 'accessory'],
-        10 => ['name' => 'Ball', 'category' => 'accessory', 'image' => 'ball.png', 'price' => 4, 'type' => 'accessory'],
-        11 => ['name' => 'Sunglasses', 'category' => 'accessory', 'image' => 'sunglasses.png', 'price' => 6, 'type' => 'accessory'],
-        12 => ['name' => 'Camera', 'category' => 'accessory', 'image' => 'camera.png', 'price' => 7, 'type' => 'accessory']
-];
+$pdo = getDB();
 
-// ألوان الدب
-$teddyColors = [
-        1 => ['name' => 'Brown', 'category' => 'color', 'image' => 'brown.png', 'price' => 0, 'type' => 'color'],
-        2 => ['name' => 'White', 'category' => 'color', 'image' => 'white.png', 'price' => 0, 'type' => 'color'],
-        3 => ['name' => 'Black', 'category' => 'color', 'image' => 'black.png', 'price' => 0, 'type' => 'color'],
-        4 => ['name' => 'Pink', 'category' => 'color', 'image' => 'pinkk.png', 'price' => 0, 'type' => 'color'],
-        5 => ['name' => 'Gray', 'category' => 'color', 'image' => 'gray.png', 'price' => 0, 'type' => 'color'],
-        6 => ['name' => 'Blue', 'category' => 'color', 'image' => 'blue.png', 'price' => 0, 'type' => 'color']
-];
+// جلب العناصر من قاعدة البيانات (ألوان + ملابس + إكسسوارات)
+// 1. جلب ألوان الدب من جدول teddy_colors
+$stmt = $pdo->query("SELECT color_id as id, name, image, 'color' as type, 0 as price FROM teddy_colors ORDER BY color_id");
+$colors = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// 2. جلب الملابس والإكسسوارات والأحذية من جدول clothing_items
+$stmt = $pdo->query("
+    SELECT 
+        item_id as id, 
+        name, 
+        type, 
+        image, 
+        price,
+        CASE 
+            WHEN type = 'outfit' THEN 'outfit'
+            WHEN type = 'shoes' THEN 'shoes'
+            WHEN type = 'accessory' THEN 'accessory'
+        END as category
+    FROM clothing_items 
+    ORDER BY item_id
+");
+$clothes = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// دمج جميع العناصر في مصفوفة واحدة
+$allItems = array_merge($colors, $clothes);
+
+// تحويل إلى نفس تنسيق JavaScript المتوقع
+$clothesItems = [];
+$teddyColors = [];
+
+foreach ($allItems as $item) {
+    if ($item['type'] === 'color') {
+        $teddyColors[$item['id']] = [
+                'id' => $item['id'],
+                'name' => $item['name'],
+                'category' => 'color',
+                'image' => $item['image'],
+                'price' => (float)$item['price'],
+                'type' => 'color'
+        ];
+    } else {
+        $clothesItems[$item['id']] = [
+                'id' => $item['id'],
+                'name' => $item['name'],
+                'category' => $item['category'],
+                'image' => $item['image'],
+                'price' => (float)$item['price'],
+                'type' => $item['type']
+        ];
+    }
+}
 ?>
 
 <!DOCTYPE html>
@@ -42,11 +71,11 @@ $teddyColors = [
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="admin.css">
     <style>
+        /* جميع التنسيقات كما هي في الكود الأصلي */
         body { background-color: var(--bg-color); font-family: 'Poppins', sans-serif; }
         .admin-wrapper { display: flex; align-items: flex-start; min-height: 100vh; }
         .admin-main { flex: 1; width: calc(100% - 280px); padding: 30px 35px; background-color: var(--bg-color); box-sizing: border-box; }
 
-        /* Filter Buttons */
         .filter-buttons {
             display: flex;
             gap: 12px;
@@ -67,24 +96,11 @@ $teddyColors = [
             align-items: center;
             gap: 8px;
         }
-        .filter-btn i {
-            color: var(--primary);
-        }
-        .filter-btn:hover {
-            background: var(--pink);
-            color: #000;
-            transform: translateY(-2px);
-        }
-        .filter-btn.active {
-            background: var(--primary);
-            color: #fff;
-            border-color: var(--primary);
-        }
-        .filter-btn.active i {
-            color: #fff;
-        }
+        .filter-btn i { color: var(--primary); }
+        .filter-btn:hover { background: var(--pink); color: #000; transform: translateY(-2px); }
+        .filter-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+        .filter-btn.active i { color: #fff; }
 
-        /* Table */
         .table-container {
             background: var(--card-bg);
             padding: 25px;
@@ -114,13 +130,8 @@ $teddyColors = [
             cursor: pointer;
             transition: all 0.3s ease;
         }
-        .items-table tbody tr:hover td {
-            background-color: rgba(248, 187, 208, 0.1);
-        }
-        .items-table tbody tr.selected {
-            background-color: rgba(248, 187, 208, 0.3);
-            border-left: 3px solid var(--pink);
-        }
+        .items-table tbody tr:hover td { background-color: rgba(248, 187, 208, 0.1); }
+        .items-table tbody tr.selected { background-color: rgba(248, 187, 208, 0.3); border-left: 3px solid var(--pink); }
         .item-img {
             width: 45px;
             height: 45px;
@@ -128,9 +139,7 @@ $teddyColors = [
             object-fit: cover;
             transition: transform 0.3s ease;
         }
-        tr:hover .item-img {
-            transform: scale(1.1);
-        }
+        tr:hover .item-img { transform: scale(1.1); }
         .category-badge {
             padding: 5px 12px;
             border-radius: 30px;
@@ -142,15 +151,9 @@ $teddyColors = [
         .badge-shoes { background: rgba(33, 150, 243, 0.2); color: #2196F3; }
         .badge-accessory { background: rgba(255, 152, 0, 0.2); color: #FF9800; }
         .badge-color { background: rgba(156, 39, 176, 0.2); color: #9C27B0; }
-        .price-value {
-            font-weight: 600;
-            color: var(--primary);
-        }
+        .price-value { font-weight: 600; color: var(--primary); }
 
-        .action-buttons {
-            display: flex;
-            gap: 8px;
-        }
+        .action-buttons { display: flex; gap: 8px; }
         .action-btn {
             width: 35px;
             height: 35px;
@@ -163,8 +166,6 @@ $teddyColors = [
             transition: all 0.3s ease;
             border: none;
             cursor: pointer;
-            position: relative;
-            overflow: hidden;
         }
         .action-btn:hover {
             background: var(--pink);
@@ -172,15 +173,9 @@ $teddyColors = [
             transform: translateY(-3px) scale(1.1);
             box-shadow: 0 5px 15px var(--shadow);
         }
-        .action-btn:active {
-            transform: translateY(-1px) scale(1.05);
-        }
-
         .action-btn.edit:hover { background: var(--primary); }
         .action-btn.delete:hover { background: #ff6b6b; color: white; }
 
-
-        /* Pagination Styles */
         .pagination-container {
             margin-top: 20px;
             display: flex;
@@ -199,25 +194,10 @@ $teddyColors = [
             transition: all 0.3s ease;
             font-weight: 500;
         }
-        .pagination-btn:hover:not(:disabled) {
-            background: var(--pink);
-            color: #000;
-            transform: translateY(-2px);
-        }
-        .pagination-btn.active {
-            background: var(--primary);
-            color: #fff;
-            border-color: var(--primary);
-        }
-        .pagination-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        .page-numbers {
-            display: flex;
-            gap: 5px;
-            flex-wrap: wrap;
-        }
+        .pagination-btn:hover:not(:disabled) { background: var(--pink); color: #000; transform: translateY(-2px); }
+        .pagination-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+        .pagination-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .page-numbers { display: flex; gap: 5px; flex-wrap: wrap; }
         .page-number {
             padding: 8px 12px;
             background: var(--card-bg);
@@ -229,23 +209,10 @@ $teddyColors = [
             min-width: 40px;
             text-align: center;
         }
-        .page-number:hover {
-            background: var(--pink);
-            color: #000;
-        }
-        .page-number.active {
-            background: var(--primary);
-            color: #fff;
-            border-color: var(--primary);
-        }
-        .items-info {
-            text-align: center;
-            margin-top: 15px;
-            color: var(--secondary-text);
-            font-size: 14px;
-        }
+        .page-number:hover { background: var(--pink); color: #000; }
+        .page-number.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+        .items-info { text-align: center; margin-top: 15px; color: var(--secondary-text); font-size: 14px; }
 
-        /* Teddy Preview Area */
         .preview-area {
             background: var(--card-bg);
             border-radius: 30px;
@@ -268,10 +235,7 @@ $teddyColors = [
             align-items: center;
             gap: 10px;
         }
-        .preview-title i {
-            color: var(--pink);
-            font-size: 24px;
-        }
+        .preview-title i { color: var(--pink); font-size: 24px; }
 
         .teddy-stage {
             position: relative;
@@ -283,19 +247,16 @@ $teddyColors = [
             justify-content: center;
             margin: 0 auto;
         }
-
         .teddy-container {
             position: relative;
             width: 100%;
             height: 100%;
             animation: floatBear 3s ease-in-out infinite;
         }
-
         @keyframes floatBear {
             0%, 100% { transform: translateY(0px); }
             50% { transform: translateY(-10px); }
         }
-
         .layer-base, .layer-item {
             position: absolute;
             left: 50%;
@@ -307,21 +268,9 @@ $teddyColors = [
             transition: all 0.4s ease;
             filter: drop-shadow(0 10px 20px rgba(0,0,0,0.15));
         }
-
-        .layer-base {
-            width: 75%;
-            height: 100%;
-            object-fit: contain;
-            object-position: center;
-        }
-        .layer-item {
-            opacity: 0;
-            pointer-events: none;
-        }
-        .layer-item.active {
-            opacity: 1;
-        }
-
+        .layer-base { width: 75%; height: 100%; object-fit: contain; object-position: center; }
+        .layer-item { opacity: 0; pointer-events: none; }
+        .layer-item.active { opacity: 1; }
         #previewAcc {
             width: 20%;
             height: auto;
@@ -330,7 +279,6 @@ $teddyColors = [
             transform: translate(-50%, -50%);
             z-index: 5;
         }
-
         #previewOutfit {
             width: 80%;
             height: auto;
@@ -339,8 +287,6 @@ $teddyColors = [
             transform: translate(-50%, -50%);
             z-index: 15;
         }
-
-
         #previewShoes {
             width: 55%;
             height: auto;
@@ -349,7 +295,6 @@ $teddyColors = [
             transform: translate(-50%, -50%);
             z-index: 16;
         }
-
         .teddy-platform {
             margin-top: 20px;
             text-align: center;
@@ -359,11 +304,7 @@ $teddyColors = [
             display: inline-block;
             box-shadow: 0 5px 15px rgba(0,0,0,0.1);
         }
-        .teddy-platform span {
-            font-weight: 600;
-            color: var(--primary);
-        }
-
+        .teddy-platform span { font-weight: 600; color: var(--primary); }
         .preview-info {
             margin-top: 20px;
             text-align: center;
@@ -371,7 +312,6 @@ $teddyColors = [
             background: rgba(248, 187, 208, 0.15);
             border-radius: 30px;
         }
-
         .action-buttons-row {
             display: flex;
             justify-content: center;
@@ -391,40 +331,12 @@ $teddyColors = [
             align-items: center;
             gap: 10px;
         }
-        .btn-reset {
-            background: #ff6b6b;
-            color: white;
-        }
-        .btn-reset:hover {
-            background: #ff4757;
-            transform: translateY(-2px);
-        }
-        .btn-screenshot {
-            background: #4CAF50;
-            color: white;
-        }
-        .btn-screenshot:hover {
-            background: #45a049;
-            transform: translateY(-2px);
-        }
-        .btn-add {
-            background: var(--lavender);
-            color: #000;
-        }
-        .btn-add:hover {
-            background: var(--primary);
-            color: white;
-            transform: translateY(-2px);
-        }
-
-        /* Screenshot wrapper */
-        .screenshot-wrapper {
-            position: relative;
-            display: inline-block;
-            background: #FFF0F5;
-            padding: 30px;
-            border-radius: 30px;
-        }
+        .btn-reset { background: #ff6b6b; color: white; }
+        .btn-reset:hover { background: #ff4757; transform: translateY(-2px); }
+        .btn-screenshot { background: #4CAF50; color: white; }
+        .btn-screenshot:hover { background: #45a049; transform: translateY(-2px); }
+        .btn-add { background: var(--lavender); color: #000; }
+        .btn-add:hover { background: var(--primary); color: white; transform: translateY(-2px); }
 
         @keyframes fadeInUp {
             from { opacity: 0; transform: translateY(20px); }
@@ -435,9 +347,7 @@ $teddyColors = [
             70% { box-shadow: 0 0 0 15px rgba(248, 187, 208, 0); }
             100% { box-shadow: 0 0 0 0 rgba(248, 187, 208, 0); }
         }
-        .preview-highlight {
-            animation: highlightPulse 0.8s ease-out;
-        }
+        .preview-highlight { animation: highlightPulse 0.8s ease-out; }
 
         @media (max-width: 800px) {
             .admin-sidebar { width: 100%; height: auto; }
@@ -487,6 +397,7 @@ $teddyColors = [
                     <th>Category</th>
                     <th>Image</th>
                     <th>Price</th>
+                    <th>Actions</th>
                 </tr>
                 </thead>
                 <tbody id="itemsTableBody">
@@ -501,7 +412,7 @@ $teddyColors = [
                 </button>
                 <div class="page-numbers" id="pageNumbers"></div>
                 <button class="pagination-btn" id="nextPageBtn">
-                     <i class="fa-solid fa-chevron-right"></i>
+                    <i class="fa-solid fa-chevron-right"></i>
                 </button>
             </div>
             <div class="items-info" id="itemsInfo"></div>
@@ -509,12 +420,7 @@ $teddyColors = [
 
         <!-- Teddy Preview Area -->
         <div class="preview-area" id="previewArea">
-
             <div class="preview-title"><i class="fa-solid fa-bear"></i> Teddy Preview</div>
-            <div class="preview-title"><i class="fa-solid fa-bear"></i></div>
-            <div class="preview-title"><i class="fa-solid fa-bear"></i></div>
-            <div class="preview-title"><i class="fa-solid fa-bear"></i></div>
-
             <div class="teddy-stage" id="teddyStage">
                 <div class="teddy-container" id="teddyContainer">
                     <img src="images/brown.png" class="layer-base" id="previewBase" alt="Teddy Bear">
@@ -543,7 +449,7 @@ $teddyColors = [
 </div>
 
 <script>
-    // ========== بيانات العناصر ==========
+    // ========== بيانات العناصر من قاعدة البيانات ==========
     const clothesItems = <?php echo json_encode($clothesItems); ?>;
     const teddyColors = <?php echo json_encode($teddyColors); ?>;
 
@@ -584,19 +490,46 @@ $teddyColors = [
         currentItems.forEach(item => {
             const isSelected = checkIfSelected(item);
             const selectedClass = isSelected ? 'selected' : '';
+            const badgeClass = item.type === 'outfit' ? 'badge-outfit' : (item.type === 'shoes' ? 'badge-shoes' : (item.type === 'accessory' ? 'badge-accessory' : 'badge-color'));
+
+            // ✅ تحديد محتوى عمود السعر (Price) - للألوان تظهر "Free"
+            let priceHtml = '';
+            if (item.type === 'color') {
+                priceHtml = '<span style="color: #4CAF50; font-weight: 500;"><i class="fa-regular fa-gem"></i> Free</span>';
+            } else {
+                priceHtml = `<span class="price-value">$${item.price.toFixed(2)}</span>`;
+            }
+
+            // ✅ تحديد محتوى عمود الإجراءات (Actions)
+            let actionsHtml = '';
+            if (item.type === 'color') {
+                // للألوان: عرض زر حذف فقط (بدون تعديل)
+                actionsHtml = `
+                    <button class="action-btn delete" onclick="event.stopPropagation(); deleteItem(${item.id})" title="Delete">
+                        <i class="fa-solid fa-trash"></i>
+                    </button>
+                `;
+            } else {
+                // للملابس والأحذية والإكسسوارات: عرض زر تعديل وحذف
+                actionsHtml = `
+                    <button class="action-btn edit" onclick="event.stopPropagation(); editItem(${item.id})" title="Edit Price">
+                        <i class="fa-solid fa-dollar-sign"></i>
+                    </button>
+                    <button class="action-btn delete" onclick="event.stopPropagation(); deleteItem(${item.id})" title="Delete">
+                        <i class="fa-solid fa-trash"></i>
+                    </button>
+                `;
+            }
 
             html += `
                 <tr data-id="${item.id}" data-name="${item.name}" data-image="${item.image}" data-type="${item.type}" data-price="${item.price}" class="${selectedClass}" onclick="applyItem(this)">
-                    <td><strong>${item.name}</strong></td>
-                    <td><span class="category-badge badge-${item.type}">${item.category.charAt(0).toUpperCase() + item.category.slice(1)}</span></td>
-                    <td><img src="images/${item.image}" class="item-img"></td>
-                    <td class="price-value">$${item.price}</td>
-                  <td><button class="action-btn edit" onclick="event.stopPropagation(); editItem(${item.id})">
-    <i class="fa-solid fa-pen-to-square"></i>
-</button></td>
-                   <td><button class="action-btn delete" onclick="event.stopPropagation(); deleteItem(${item.id})">
-    <i class="fa-solid fa-trash"></i>
-</button></td>
+                    <td><strong>${escapeHtml(item.name)}</strong></td>
+                    <td><span class="category-badge ${badgeClass}">${item.category.charAt(0).toUpperCase() + item.category.slice(1)}</span></td>
+                    <td><img src="images/${item.image}" class="item-img" onerror="this.src='images/placeholder.png'"></td>
+                    <td class="price-value">${priceHtml}</td>
+                    <td class="action-buttons">
+                        ${actionsHtml}
+                    </td>
                 </tr>
             `;
         });
@@ -605,37 +538,29 @@ $teddyColors = [
 
         // تحديث معلومات pagination
         updatePaginationControls(totalItems, totalPages);
-
-        // إضافة تأثيرات hover
-        document.querySelectorAll('#itemsTableBody tr').forEach(row => {
-            row.addEventListener('mouseenter', function() {
-                this.style.transform = 'translateX(5px)';
-            });
-            row.addEventListener('mouseleave', function() {
-                this.style.transform = 'translateX(0)';
-            });
-        });
     }
 
-    // تحديث عناصر التحكم في pagination
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
     function updatePaginationControls(totalItems, totalPages) {
         const startNum = (currentPage - 1) * itemsPerPage + 1;
         const endNum = Math.min(currentPage * itemsPerPage, totalItems);
 
         document.getElementById('itemsInfo').innerHTML = `Showing ${startNum} - ${endNum} of ${totalItems} items`;
 
-        // تحديث أزرار التنقل
         const prevBtn = document.getElementById('prevPageBtn');
         const nextBtn = document.getElementById('nextPageBtn');
 
         prevBtn.disabled = currentPage === 1;
         nextBtn.disabled = currentPage === totalPages || totalPages === 0;
 
-        // إنشاء أرقام الصفحات
         const pageNumbersDiv = document.getElementById('pageNumbers');
         let pageNumbersHtml = '';
 
-        // عرض أرقام الصفحات مع حدود معقولة
         let startPage = Math.max(1, currentPage - 2);
         let endPage = Math.min(totalPages, currentPage + 2);
 
@@ -660,7 +585,6 @@ $teddyColors = [
 
         pageNumbersDiv.innerHTML = pageNumbersHtml;
 
-        // إضافة مستمعات الأحداث لأرقام الصفحات
         document.querySelectorAll('.page-number').forEach(el => {
             if (!el.classList.contains('disabled')) {
                 el.addEventListener('click', function() {
@@ -668,7 +592,6 @@ $teddyColors = [
                     if (page && page !== currentPage) {
                         currentPage = page;
                         displayTable();
-                        // إعادة تطبيق التحديد بعد تغيير الصفحة
                         reapplyHighlights();
                     }
                 });
@@ -676,7 +599,6 @@ $teddyColors = [
         });
     }
 
-    // إعادة تطبيق التحديدات بعد تغيير الصفحة
     function reapplyHighlights() {
         document.querySelectorAll('#itemsTableBody tr').forEach(row => {
             const type = row.getAttribute('data-type');
@@ -701,7 +623,6 @@ $teddyColors = [
         });
     }
 
-    // التحقق مما إذا كان العنصر مختاراً
     function checkIfSelected(item) {
         if (item.type === 'color') {
             return currentSelections.color === item.image;
@@ -741,22 +662,17 @@ $teddyColors = [
             currentSelections.accessory = image;
         }
 
-        // تحديث التحديد في الجدول
         document.querySelectorAll('#itemsTableBody tr').forEach(tr => {
             tr.classList.remove('selected');
         });
         row.classList.add('selected');
 
-        // تحديث معلومات المعاينة
         updatePreviewInfo(name, type);
-
-        // التمرير إلى منطقة الدب
         scrollToPreview();
     }
 
-    // تحديث معلومات المعاينة
     function updatePreviewInfo(itemName, type) {
-        let infoText = `<p><strong style="color: var(--primary);">${itemName}</strong> applied to ${type}</p>`;
+        let infoText = `<p><strong style="color: var(--primary);">${escapeHtml(itemName)}</strong> applied to ${type}</p>`;
         infoText += `<p style="font-size: 13px; margin-top: 5px;">`;
         if (currentSelections.outfit) infoText += `👕 Outfit selected<br>`;
         if (currentSelections.shoes) infoText += `👟 Shoes selected<br>`;
@@ -768,7 +684,6 @@ $teddyColors = [
         document.getElementById('previewInfo').innerHTML = infoText;
     }
 
-    // التمرير إلى منطقة المعاينة
     function scrollToPreview() {
         const previewArea = document.getElementById('previewArea');
         if (previewArea) {
@@ -790,37 +705,30 @@ $teddyColors = [
 
     // ========== إعادة تعيين الدب ==========
     function resetTeddy() {
-        // إعادة ضبط اللون
         document.getElementById('previewBase').src = 'images/brown.png';
         currentSelections.color = 'brown.png';
 
-        // إزالة الملابس
         const outfitLayer = document.getElementById('previewOutfit');
         outfitLayer.src = '';
         outfitLayer.classList.remove('active');
         currentSelections.outfit = null;
 
-        // إزالة الأحذية
         const shoesLayer = document.getElementById('previewShoes');
         shoesLayer.src = '';
         shoesLayer.classList.remove('active');
         currentSelections.shoes = null;
 
-        // إزالة الإكسسوارات
         const accLayer = document.getElementById('previewAcc');
         accLayer.src = '';
         accLayer.classList.remove('active');
         currentSelections.accessory = null;
 
-        // إزالة التحديد من الجدول
         document.querySelectorAll('#itemsTableBody tr').forEach(row => {
             row.classList.remove('selected');
         });
 
-        // تحديث معلومات المعاينة
         document.getElementById('previewInfo').innerHTML = `<p>All items cleared. Select new items to customize!</p>`;
 
-        // تأثير على الزر
         const btn = document.getElementById('resetBtn');
         const originalHTML = btn.innerHTML;
         btn.innerHTML = '<i class="fa-solid fa-check"></i> Reset!';
@@ -831,12 +739,29 @@ $teddyColors = [
         scrollToPreview();
     }
 
+    // ========== دوال التعديل والحذف ==========
     function editItem(itemId) {
-         window.location.href = `edit-item.php?id=${itemId}`;
+        window.location.href = `edit-item.php?id=${itemId}`;
+    }
+
+    async function deleteItemFromDB(itemId, itemType) {
+        try {
+            const response = await fetch('delete-item.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `item_id=${itemId}&item_type=${itemType}`
+            });
+            const result = await response.json();
+            return result.success;
+        } catch (error) {
+            console.error('Error:', error);
+            return false;
+        }
     }
 
     function showAdminConfirm(message, onConfirm) {
-        // 1. إنشاء overlay الخلفية
         const overlay = document.createElement('div');
         overlay.id = 'admin-confirm-overlay';
         overlay.style.position = 'fixed';
@@ -853,7 +778,6 @@ $teddyColors = [
         overlay.style.opacity = '0';
         overlay.style.transition = 'opacity 0.3s ease';
 
-        // 2. إنشاء نافذة الـ Popup
         const popup = document.createElement('div');
         popup.id = 'admin-confirm-popup';
         popup.style.backgroundColor = 'var(--card-bg, #ffffff)';
@@ -869,27 +793,24 @@ $teddyColors = [
         popup.style.transition = 'transform 0.25s ease';
         popup.style.border = '1px solid var(--pink, #F8BBD0)';
 
-        // محتوى البوب أب
         popup.innerHTML = `
-        <div style="font-size: 58px; margin-bottom: 12px;">⚠️</div>
-        <h3 style="font-size: 24px; font-weight: 600; margin-bottom: 12px;">Are you sure?</h3>
-        <p style="font-size: 16px; color: var(--secondary-text, #555); margin-bottom: 28px; line-height: 1.5;">${message}</p>
-        <div style="display: flex; gap: 15px; justify-content: center;">
-            <button id="confirm-cancel-btn" style="background: transparent; border: 2px solid var(--pink, #F8BBD0); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer; color: var(--text-color, #333); transition: all 0.2s;">Cancel</button>
-            <button id="confirm-ok-btn" style="background: #d9534f; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer; box-shadow: 0 4px 8px rgba(217,83,79,0.3); transition: all 0.2s;">Delete</button>
-        </div>
-    `;
+            <div style="font-size: 58px; margin-bottom: 12px;">⚠️</div>
+            <h3 style="font-size: 24px; font-weight: 600; margin-bottom: 12px;">Are you sure?</h3>
+            <p style="font-size: 16px; color: var(--secondary-text, #555); margin-bottom: 28px; line-height: 1.5;">${message}</p>
+            <div style="display: flex; gap: 15px; justify-content: center;">
+                <button id="confirm-cancel-btn" style="background: transparent; border: 2px solid var(--pink, #F8BBD0); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer; color: var(--text-color, #333); transition: all 0.2s;">Cancel</button>
+                <button id="confirm-ok-btn" style="background: #d9534f; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer; box-shadow: 0 4px 8px rgba(217,83,79,0.3); transition: all 0.2s;">Delete</button>
+            </div>
+        `;
 
         overlay.appendChild(popup);
         document.body.appendChild(overlay);
 
-        // ظهور الأنيميشن
         setTimeout(() => {
             overlay.style.opacity = '1';
             popup.style.transform = 'scale(1)';
         }, 10);
 
-        // إزالة البوب أب
         function closePopup() {
             overlay.style.opacity = '0';
             popup.style.transform = 'scale(0.9)';
@@ -898,19 +819,14 @@ $teddyColors = [
             }, 250);
         }
 
-        // دالة عرض رسالة النجاح (toast منتصف الصفحة)
         function showSuccessToast() {
             const toast = document.createElement('div');
-            toast.id = 'admin-success-toast';
             toast.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 12px;">
-
-                <div>
-                    <strong style="font-size: 18px;">Removed from the system!</strong>
-
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <i class="fa-solid fa-check-circle" style="font-size: 28px; color: #28a745;"></i>
+                    <div><strong style="font-size: 18px;">Item removed successfully!</strong></div>
                 </div>
-            </div>
-        `;
+            `;
             toast.style.position = 'fixed';
             toast.style.top = '50%';
             toast.style.left = '50%';
@@ -922,17 +838,13 @@ $teddyColors = [
             toast.style.boxShadow = '0 20px 35px rgba(0,0,0,0.2)';
             toast.style.zIndex = '10000';
             toast.style.fontFamily = "'Poppins', sans-serif";
-            toast.style.borderRight = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderLeft = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderTop = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderBottom = '4px solid var(--pink, #F8BBD0)';
+            toast.style.border = '2px solid #28a745';
             toast.style.backdropFilter = 'blur(12px)';
             toast.style.opacity = '0';
             toast.style.transition = 'all 0.25s cubic-bezier(0.34, 1.2, 0.64, 1)';
             toast.style.fontWeight = '500';
             toast.style.textAlign = 'center';
             toast.style.minWidth = '280px';
-            toast.style.boxSizing = 'border-box';
 
             document.body.appendChild(toast);
 
@@ -941,7 +853,6 @@ $teddyColors = [
                 toast.style.transform = 'translate(-50%, -50%) scale(1)';
             }, 20);
 
-            // إخفاء الرسالة بعد 2.5 ثانية
             setTimeout(() => {
                 toast.style.opacity = '0';
                 toast.style.transform = 'translate(-50%, -50%) scale(0.95)';
@@ -951,7 +862,6 @@ $teddyColors = [
             }, 2500);
         }
 
-        // أحداث الأزرار
         const cancelBtn = popup.querySelector('#confirm-cancel-btn');
         const confirmBtn = popup.querySelector('#confirm-ok-btn');
 
@@ -959,26 +869,43 @@ $teddyColors = [
             closePopup();
         });
 
-        confirmBtn.addEventListener('click', () => {
-            // ✅ بدون حذف فعلي – فقط استدعاء callback إذا أردت تنفيذ شيء لاحقاً (مثل تحديث واجهة)
+        confirmBtn.addEventListener('click', async () => {
             if (onConfirm && typeof onConfirm === 'function') {
-                onConfirm();  // هون بتقدر تعمل أي شيء زي تحديث UI بدون حذف حقيقي
+                await onConfirm();
             }
             closePopup();
-            // عرض رسالة النجاح الجميلة في منتصف الصفحة
             showSuccessToast();
         });
 
-        // إغلاق عند الضغط على overlay
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) closePopup();
         });
     }
 
     function deleteItem(itemId) {
-        showAdminConfirm('are you sure you want to delete this item?', () => {
+        // البحث عن نوع العنصر
+        const item = allItems.find(i => i.id == itemId);
+        if (!item) return;
 
-        })
+        showAdminConfirm('Are you sure you want to delete this item?', async () => {
+            const success = await deleteItemFromDB(itemId, item.type);
+            if (success) {
+                // إزالة العنصر من المصفوفة المحلية
+                const index = allItems.findIndex(i => i.id == itemId);
+                if (index !== -1) allItems.splice(index, 1);
+
+                // إزالة من clothesItems أو teddyColors حسب النوع
+                if (item.type === 'color') {
+                    delete teddyColors[itemId];
+                } else {
+                    delete clothesItems[itemId];
+                }
+
+                // إعادة عرض الجدول
+                displayTable();
+                reapplyHighlights();
+            }
+        });
     }
 
     // ========== حفظ كصورة ==========
@@ -989,14 +916,10 @@ $teddyColors = [
 
         btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Capturing...';
         btn.disabled = true;
-
-        // وقف الانيميشن
         container.style.animation = "none";
 
         try {
-
             await new Promise(r => setTimeout(r, 100));
-
             const canvas = await html2canvas(container, {
                 scale: 3,
                 backgroundColor: '#FFF0F5',
@@ -1005,28 +928,23 @@ $teddyColors = [
 
             const finalCanvas = document.createElement('canvas');
             const ctx = finalCanvas.getContext('2d');
-
             const padding = 170;
             finalCanvas.width = canvas.width + padding * 2;
             finalCanvas.height = canvas.height + padding * 2;
 
             ctx.fillStyle = '#FFF0F5';
             ctx.fillRect(0, 0, finalCanvas.width, finalCanvas.height);
-
             ctx.drawImage(canvas, padding, padding);
 
             const link = document.createElement('a');
             link.download = `teddy-design-${Date.now()}.png`;
             link.href = finalCanvas.toDataURL('image/png');
             link.click();
-
         } catch(e) {
             console.error(e);
         }
 
-        // رجّع الانيميشن
         container.style.animation = "floatBear 3s ease-in-out infinite";
-
         btn.innerHTML = originalHTML;
         btn.disabled = false;
     }
@@ -1034,9 +952,8 @@ $teddyColors = [
     // ========== الفلترة ==========
     function filterItems(type) {
         currentFilter = type;
-        currentPage = 1; // إعادة تعيين الصفحة إلى 1 عند تغيير الفلتر
+        currentPage = 1;
 
-        // تحديث حالة الأزرار
         document.querySelectorAll('.filter-btn').forEach(btn => {
             btn.classList.remove('active');
             if (btn.getAttribute('data-filter') === type) {
@@ -1051,14 +968,12 @@ $teddyColors = [
     document.addEventListener('DOMContentLoaded', function() {
         displayTable();
 
-        // ربط أزرار الفلترة
         document.querySelectorAll('.filter-btn').forEach(btn => {
             btn.addEventListener('click', function() {
                 filterItems(this.getAttribute('data-filter'));
             });
         });
 
-        // ربط أزرار التنقل في pagination
         document.getElementById('prevPageBtn').addEventListener('click', function() {
             if (currentPage > 1) {
                 currentPage--;
@@ -1076,17 +991,15 @@ $teddyColors = [
             }
         });
 
-        // ربط زر الريست
         document.getElementById('resetBtn').addEventListener('click', resetTeddy);
-
-        // ربط زر التصوير
         document.getElementById('screenshotBtn').addEventListener('click', captureScreenshot);
     });
 
-    // جعل الدوال عامة
     window.applyItem = applyItem;
     window.resetTeddy = resetTeddy;
     window.captureScreenshot = captureScreenshot;
+    window.editItem = editItem;
+    window.deleteItem = deleteItem;
 </script>
 
 <script>

@@ -2,8 +2,9 @@
 // add-coupon.php
 session_start();
 
-// تضمين مصفوفة الكوبونات
-require_once 'coupons-array.php';
+// الاتصال بقاعدة البيانات
+require_once 'db.php';
+$pdo = getDB();
 
 // متغيرات النموذج
 $code = '';
@@ -42,12 +43,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = 'Coupon code is required';
     }
 
-    // التحقق من عدم تكرار الكود
-    foreach ($coupons as $existing) {
-        if (strtoupper($existing['code']) === $code) {
-            $errors[] = 'Coupon code already exists';
-            break;
-        }
+    // التحقق من عدم تكرار الكود في قاعدة البيانات الحقيقية
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM Coupons WHERE code = ?");
+    $stmt->execute([$code]);
+    if ($stmt->fetchColumn() > 0) {
+        $errors[] = 'Coupon code already exists';
     }
 
     if (empty($description)) {
@@ -78,46 +78,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = 'Expiry date cannot be before start date';
     }
 
-    // إذا لم يكن هناك أخطاء
+    // إذا لم يكن هناك أخطاء، أدخل في قاعدة البيانات
     if (empty($errors)) {
-        // حساب آخر ID
-        $new_id = count($coupons) + 1;
+        try {
+            $stmt = $pdo->prepare("INSERT INTO Coupons (code, description, discount_type, discount_value, min_order, max_discount, usage_limit, start_date, expiry_date, status) 
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([
+                    $code, $description, $discount_type, $discount_value,
+                    $min_order, $max_discount, $usage_limit, $start_date, $expiry_date, $status
+            ]);
 
-        // إنشاء الكوبون الجديد
-        $new_coupon = [
-            'code' => $code,
-            'description' => $description,
-            'discount_type' => $discount_type,
-            'discount_value' => $discount_value,
-            'min_order' => $min_order,
-            'max_discount' => $max_discount,
-            'usage_limit' => $usage_limit,
-            'used_count' => 0,
-            'start_date' => $start_date,
-            'expiry_date' => $expiry_date,
-            'status' => $status,
-            'applicable_products' => $applicable_products,
-            'applicable_categories' => $applicable_categories
-        ];
+            $success = true;
 
-        // في التطبيق الحقيقي، ستضيفه إلى قاعدة البيانات
-        // للتجربة، نعرض رسالة نجاح
+            // إعادة تعيين النموذج
+            $code = '';
+            $description = '';
+            $discount_type = '';
+            $discount_value = '';
+            $min_order = '';
+            $max_discount = '';
+            $usage_limit = '';
+            $start_date = '';
+            $expiry_date = '';
+            $status = 'active';
+            $applicable_products = 'all';
+            $applicable_categories = 'all';
 
-        $success = true;
-
-        // إعادة تعيين النموذج
-        $code = '';
-        $description = '';
-        $discount_type = '';
-        $discount_value = '';
-        $min_order = '';
-        $max_discount = '';
-        $usage_limit = '';
-        $start_date = '';
-        $expiry_date = '';
-        $status = 'active';
-        $applicable_products = 'all';
-        $applicable_categories = 'all';
+        } catch (PDOException $e) {
+            $errors[] = 'Database error: ' . $e->getMessage();
+        }
     }
 }
 ?>
@@ -416,8 +405,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <label><i class="fa-solid fa-tags"></i> Applicable Categories</label>
                     <select name="applicable_categories" class="form-control">
                         <option value="all" <?= $applicable_categories == 'all' ? 'selected' : '' ?>>All Categories</option>
-                        <option value="summer" <?= $applicable_categories == 'summer' ? 'selected' : '' ?>>Summer Collection</option>
-                        <option value="premium" <?= $applicable_categories == 'premium' ? 'selected' : '' ?>>Premium Items</option>
                     </select>
                     <div class="help-text">Select which categories this coupon applies to</div>
                 </div>

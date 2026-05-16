@@ -1,43 +1,72 @@
 <?php
 // search-product.php
 session_start();
+require_once 'db.php';
+
+$pdo = getDB();
 $pageTitle = "Search Results | Teddy Lap Admin";
 
-// جلب بيانات المنتجات
-include 'products.php';
-
-function smartSearch($text, $query) {
-    return preg_match('/\b' . preg_quote($query, '/') . '\b/i', $text);
-}
 // معالجة البحث
 $query = isset($_GET['q']) ? trim($_GET['q']) : '';
 $results = [];
-$categories = [];
-
-// استخراج الأقسام من المنتجات
-if (isset($products)) {
-    $categories = array_unique(array_column($products, 'category'));
-}
-
-// منطق البحث
 $totalResults = 0;
-if (!empty($query) && isset($products)) {
-    foreach ($products as $id => $item) {
-        if (
-                smartSearch($item['name'], $query) ||
-                smartSearch($item['category'], $query) ||
-                smartSearch($item['description'], $query)
-        ) {
-            $results[$id] = $item;
-            $totalResults++;
-        }
+
+// جلب قائمة التصنيفات من قاعدة البيانات للـ Quick Filters
+$stmt = $pdo->query("SELECT DISTINCT c.name FROM categories c JOIN products p ON c.category_id = p.category_id ORDER BY c.name LIMIT 5");
+$categories = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+// منطق البحث في قاعدة البيانات
+if (!empty($query)) {
+    // استخدام البحث المتقدم مع ILIKE (غير حساس لحالة الأحرف)
+    $searchTerm = '%' . $query . '%';
+
+    $stmt = $pdo->prepare("
+        SELECT 
+            p.product_id,
+            p.name,
+            p.description,
+            p.price,
+            p.image,
+            p.stock,
+            p.sales_count,
+            c.name as category_name
+        FROM products p
+        JOIN categories c ON p.category_id = c.category_id
+        WHERE 
+            p.name ILIKE ? OR 
+            c.name ILIKE ? OR 
+            p.description ILIKE ?
+        ORDER BY 
+            CASE 
+                WHEN p.name ILIKE ? THEN 1
+                WHEN c.name ILIKE ? THEN 2
+                ELSE 3
+            END,
+            p.name
+    ");
+
+    $stmt->execute([$searchTerm, $searchTerm, $searchTerm, $searchTerm, $searchTerm]);
+    $resultsData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // تنسيق النتائج
+    foreach ($resultsData as $item) {
+        $results[$item['product_id']] = [
+                'name' => $item['name'],
+                'description' => $item['description'],
+                'price' => (float)$item['price'],
+                'category' => $item['category_name'],
+                'image' => $item['image'] ?: 'images/placeholder.png',
+                'stock' => $item['stock'],
+                'sales_count' => $item['sales_count']
+        ];
     }
+
+    $totalResults = count($results);
 }
 
 // Pagination للنتائج
 $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
 $perPage = 5;
-$totalResults = count($results);
 $totalPages = ceil($totalResults / $perPage);
 $offset = ($page - 1) * $perPage;
 $paginatedResults = array_slice($results, $offset, $perPage, true);
@@ -320,6 +349,7 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
         .action-btn.view:hover { background: var(--lavender); }
         .action-btn.edit:hover { background: var(--primary); }
         .action-btn.delete:hover { background: #ff6b6b; color: white; }
+
         /* No Results */
         .no-results {
             text-align: center;
@@ -379,6 +409,11 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             color: white;
             border-color: var(--primary);
             transform: scale(1.1);
+        }
+        .page-item.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            pointer-events: none;
         }
 
         @keyframes fadeInUp {
@@ -459,9 +494,9 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
                 <i class="fa-solid fa-arrow-left"></i> Back to Products
             </a>
 
-            <?php foreach (array_slice($categories, 0, 5) as $category): ?>
-                <span class="filter-chip" onclick="filterCategory('<?= $category ?>')">
-                    <?= $category ?>
+            <?php foreach ($categories as $category): ?>
+                <span class="filter-chip" onclick="searchSuggestion('<?= htmlspecialchars($category) ?>')">
+                    <?= htmlspecialchars($category) ?>
                 </span>
             <?php endforeach; ?>
         </div>
@@ -475,7 +510,7 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
                 </div>
             </div>
 
-            <!-- Results Table (نفس تصميم products.php) -->
+            <!-- Results Table -->
             <div class="table-container">
                 <table class="products-table">
                     <thead>
@@ -489,27 +524,28 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
                     </tr>
                     </thead>
                     <tbody>
+                    <?php $counter = $offset + 1; ?>
                     <?php foreach($paginatedResults as $id => $product): ?>
                         <tr>
-                            <td><?= $id ?></td>
+                            <td><?= $counter++ ?></td>
                             <td>
                                 <div class="product-info">
-                                    <img src="<?= $product['image'] ?>" alt="<?= $product['name'] ?>" class="product-img">
+                                    <img src="<?= htmlspecialchars($product['image']) ?>" alt="<?= htmlspecialchars($product['name']) ?>" class="product-img" onerror="this.src='images/placeholder.png'">
                                     <div>
-                                        <strong><?= $product['name'] ?></strong>
+                                        <strong><?= htmlspecialchars($product['name']) ?></strong>
                                         <div style="font-size: 12px; color: var(--secondary-text);">ID: #<?= $id ?></div>
                                     </div>
                                 </div>
                             </td>
                             <td>
                                 <span style="background: var(--lavender); padding: 5px 15px; border-radius: 30px; font-size: 12px;">
-                                    <?= $product['category'] ?>
+                                    <?= htmlspecialchars($product['category']) ?>
                                 </span>
                             </td>
                             <td><strong>$<?= number_format($product['price'], 2) ?></strong></td>
                             <td>
                                 <span style="color: var(--secondary-text); font-size: 13px;">
-                                    <?= substr($product['description'], 0, 50) ?>...
+                                    <?= htmlspecialchars(substr($product['description'] ?? 'No description', 0, 50)) ?>...
                                 </span>
                             </td>
                             <td>
@@ -545,12 +581,30 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
                                 <span class="page-item disabled"><i class="fa-solid fa-chevron-left"></i></span>
                             <?php endif; ?>
 
-                            <?php for($i = 1; $i <= $totalPages; $i++): ?>
+                            <?php
+                            $startPage = max(1, $page - 2);
+                            $endPage = min($totalPages, $page + 2);
+
+                            if ($startPage > 1): ?>
+                                <a href="?q=<?= urlencode($query) ?>&page=1" class="page-item">1</a>
+                                <?php if ($startPage > 2): ?>
+                                    <span class="page-item disabled">...</span>
+                                <?php endif; ?>
+                            <?php endif; ?>
+
+                            <?php for($i = $startPage; $i <= $endPage; $i++): ?>
                                 <a href="?q=<?= urlencode($query) ?>&page=<?= $i ?>"
                                    class="page-item <?= $i == $page ? 'active' : '' ?>">
                                     <?= $i ?>
                                 </a>
                             <?php endfor; ?>
+
+                            <?php if ($endPage < $totalPages): ?>
+                                <?php if ($endPage < $totalPages - 1): ?>
+                                    <span class="page-item disabled">...</span>
+                                <?php endif; ?>
+                                <a href="?q=<?= urlencode($query) ?>&page=<?= $totalPages ?>" class="page-item"><?= $totalPages ?></a>
+                            <?php endif; ?>
 
                             <?php if ($page < $totalPages): ?>
                                 <a href="?q=<?= urlencode($query) ?>&page=<?= $page + 1 ?>" class="page-item">
@@ -596,48 +650,32 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
         }, 200);
     });
 
-    searchInput.addEventListener('input', function() {
-        const value = this.value.toLowerCase();
-        if (value.length > 1) {
-            // هنا ممكن تضيف اقتراحات ديناميكية حسب المدخلات
-            console.log('Searching for:', value);
-        }
-    });
-
     // Suggestion functions
     function searchSuggestion(term) {
         window.location.href = 'search-product.php?q=' + encodeURIComponent(term);
     }
 
-    function filterCategory(category) {
-        if (category === 'all') {
-            window.location.href = 'products.php';
-        } else {
-            window.location.href = 'search-product.php?q=' + encodeURIComponent(category);
-        }
-    }
-
-    function sortResults(sortBy) {
-        const url = new URL(window.location.href);
-        url.searchParams.set('sort', sortBy);
-        window.location.href = url.toString();
-    }
-
     // Product functions
     function viewProduct(id) {
-        window.location.href = 'product_details.php?id=' + id;
+        window.location.href = 'product_details-admin.php?id=' + id;
     }
 
     function editProduct(id) {
         window.location.href = 'edit-product.php?id=' + id;
     }
 
-    // Clear search input
+    function deleteProduct(id) {
+        if (confirm('Are you sure you want to delete this product? This action cannot be undone.')) {
+            window.location.href = 'delete-product.php?id=' + id;
+        }
+    }
+
+    // Clear search input if empty
     document.getElementById('searchForm').addEventListener('submit', function(e) {
         const input = document.getElementById('searchInput');
         if (!input.value.trim()) {
             e.preventDefault();
-            window.location.href = 'products.php';
+            window.location.href = 'product-admin.php';
         }
     });
 

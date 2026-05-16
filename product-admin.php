@@ -1,14 +1,83 @@
 <?php
 // products.php
 session_start();
+require_once 'db.php';
 
-// تضمين مصفوفة المنتجات
-require_once 'products.php';
+$pdo = getDB();
 
 // Pagination
 $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
 $perPage = 5;
-$totalGames = count($products);
+
+// --- جلب جميع المنتجات من قاعدة البيانات مع معلومات التقييم والمبيعات ---
+$stmt = $pdo->query("
+    SELECT 
+        p.product_id,
+        p.name,
+        p.description,
+        p.price,
+        p.category_id,
+        p.image,
+        p.stock,
+        p.sales_count,
+        p.created_at,
+        p.sale_price,
+        c.name as category_name,
+        COALESCE(AVG(r.rating), 0) as avg_rating,
+        COUNT(DISTINCT r.review_id) as review_count
+    FROM products p
+    JOIN categories c ON p.category_id = c.category_id
+    LEFT JOIN reviews r ON p.product_id = r.product_id AND r.status = 'approved'
+    GROUP BY p.product_id, p.name, p.description, p.price, p.category_id, p.image, p.stock, p.sales_count, p.created_at, p.sale_price, c.name
+    ORDER BY p.product_id
+");
+$productsFromDB = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// تحويل المنتجات إلى نفس تنسيق المصفوفة القديمة للتوافق مع JavaScript
+$products = [];
+foreach ($productsFromDB as $product) {
+    $products[$product['product_id']] = [
+            'id' => $product['product_id'],
+            'name' => $product['name'],
+            'description' => $product['description'],
+            'price' => (float)$product['price'],
+            'category' => strtolower($product['category_name']),
+            'image' => $product['image'] ?: 'images/placeholder.png',
+            'stock' => $product['stock'],
+            'sales_count' => $product['sales_count'],
+            'avg_rating' => round($product['avg_rating'], 1),
+            'review_count' => $product['review_count'],
+            'created_at' => $product['created_at']
+    ];
+}
+
+// حساب الإحصائيات من قاعدة البيانات
+$totalProducts = count($products);
+
+// جلب عدد التصنيفات الفريدة
+$stmt = $pdo->query("SELECT COUNT(DISTINCT category_id) FROM products");
+$totalCategories = $stmt->fetchColumn();
+
+// جلب عدد المنتجات التي لديها مراجعات
+$stmt = $pdo->query("
+    SELECT COUNT(DISTINCT p.product_id) 
+    FROM products p 
+    JOIN reviews r ON p.product_id = r.product_id 
+    WHERE r.status = 'approved'
+");
+$productsWithReviews = $stmt->fetchColumn();
+
+// جلب عدد المنتجات المضافة هذا الشهر
+$stmt = $pdo->query("
+    SELECT COUNT(*) 
+    FROM products 
+    WHERE EXTRACT(MONTH FROM created_at) = EXTRACT(MONTH FROM CURRENT_DATE)
+    AND EXTRACT(YEAR FROM created_at) = EXTRACT(YEAR FROM CURRENT_DATE)
+");
+$newThisMonth = $stmt->fetchColumn();
+
+// Pagination
+$totalGames = $totalProducts;
 $totalPages = ceil($totalGames / $perPage);
 $offset = ($page - 1) * $perPage;
 $paginatedGames = array_slice($products, $offset, $perPage, true);
@@ -468,15 +537,6 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
         </div>
 
         <!-- Stats Cards -->
-        <?php
-        // حساب الإحصائيات
-        $totalProducts = count($products);
-        $categories = [];
-        foreach($products as $product) {
-            $categories[$product['category']] = true;
-        }
-        $totalCategories = count($categories);
-        ?>
         <div class="stats-mini">
             <div class="stat-mini-card">
                 <div class="stat-mini-info">
@@ -495,14 +555,14 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
             <div class="stat-mini-card">
                 <div class="stat-mini-info">
                     <h4>With Reviews</h4>
-                    <div class="value">0</div>
+                    <div class="value"><?= $productsWithReviews ?></div>
                 </div>
                 <i class="fa-solid fa-star stat-mini-icon" style="color: #FFD700;"></i>
             </div>
             <div class="stat-mini-card">
                 <div class="stat-mini-info">
                     <h4>New This Month</h4>
-                    <div class="value">0</div>
+                    <div class="value"><?= $newThisMonth ?></div>
                 </div>
                 <i class="fa-solid fa-calendar-plus stat-mini-icon" style="color: var(--primary);"></i>
             </div>
@@ -524,13 +584,15 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
                 <div class="filter-item">
                     <select class="filter-select" id="categoryFilter">
                         <option value="">All Categories</option>
-                        <option value="teddy bear">Teddy Bears</option>
-                        <option value="dolls & barbie">Dolls & Barbie</option>
-                        <option value="building toys">Building Toys</option>
-                        <option value="cars & vehicles">Cars & Vehicles</option>
-                        <option value="group games">Group Games</option>
-                        <option value="educational toys">Educational Toys</option>
-                        <option value="puzzles">Puzzles</option>
+                        <?php
+                        // جلب جميع التصنيفات من قاعدة البيانات
+                        $stmt = $pdo->query("SELECT DISTINCT LOWER(c.name) as cat_name FROM categories c JOIN products p ON c.category_id = p.category_id ORDER BY cat_name");
+                        $categoriesList = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                        foreach ($categoriesList as $cat):
+                            $displayCat = ucfirst(str_replace('-', ' ', $cat));
+                            ?>
+                            <option value="<?= htmlspecialchars($cat) ?>"><?= htmlspecialchars($displayCat) ?></option>
+                        <?php endforeach; ?>
                     </select>
                 </div>
                 <div class="filter-item">
@@ -596,12 +658,16 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
 <script>
     // ===== بيانات المنتجات من PHP إلى JavaScript =====
     const allProducts = <?php echo json_encode($products); ?>;
-    const productsArray = Object.entries(allProducts).map(([id, product]) => {
+    const productsArray = Object.values(allProducts).map(product => {
         return {
-            id: id,
-            ...product,
+            id: product.id,
+            name: product.name,
             price: parseFloat(product.price),
-            category: product.category.toLowerCase()
+            category: product.category,
+            image: product.image,
+            sales_count: product.sales_count || 0,
+            avg_rating: product.avg_rating || 0,
+            review_count: product.review_count || 0
         };
     });
 
@@ -609,6 +675,41 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
     let perPage = <?= $perPage ?>;
     let filteredProducts = [...productsArray];
     let totalFilteredProducts = filteredProducts.length;
+
+    // ===== دوال AJAX للحذف من قاعدة البيانات =====
+    async function deleteProductFromDB(productId) {
+        try {
+            const response = await fetch('delete-product.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: 'product_id=' + productId
+            });
+            const result = await response.json();
+            return result.success;
+        } catch (error) {
+            console.error('Error:', error);
+            return false;
+        }
+    }
+
+    async function bulkDeleteFromDB(productIds) {
+        try {
+            const response = await fetch('bulk-delete-products.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ product_ids: productIds })
+            });
+            const result = await response.json();
+            return result.success;
+        } catch (error) {
+            console.error('Error:', error);
+            return false;
+        }
+    }
 
     // ===== دوال عرض المنتجات =====
     function displayProducts() {
@@ -622,9 +723,14 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
             // توليد النجوم
             let stars = '';
             const rating = product.avg_rating || 0;
+            const fullStars = Math.floor(rating);
+            const hasHalfStar = (rating - fullStars) >= 0.5;
+
             for (let i = 1; i <= 5; i++) {
-                if (i <= rating) {
+                if (i <= fullStars) {
                     stars += '<i class="fa-solid fa-star" style="color: #FFD700; font-size: 14px;"></i>';
+                } else if (hasHalfStar && i === fullStars + 1) {
+                    stars += '<i class="fa-solid fa-star-half-alt" style="color: #FFD700; font-size: 14px;"></i>';
                 } else {
                     stars += '<i class="fa-regular fa-star" style="color: #FFD700; font-size: 14px;"></i>';
                 }
@@ -635,9 +741,9 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
                     <td><input type="checkbox" class="product-checkbox" style="transform: scale(1.2); cursor: pointer;" value="${product.id}"></td>
                     <td>
                         <div class="product-info">
-                            <img src="${product.image}" alt="${product.name}" class="product-img">
+                            <img src="${product.image}" alt="${product.name}" class="product-img" onerror="this.src='images/placeholder.png'">
                             <div>
-                                <strong>${product.name}</strong>
+                                <strong>${escapeHtml(product.name)}</strong>
                                 <div style="font-size: 12px; color: var(--secondary-text);">ID: #${product.id}</div>
                             </div>
                         </div>
@@ -645,13 +751,13 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
                     <td><strong>$${product.price.toFixed(2)}</strong></td>
                     <td>
                         <span style="background: var(--lavender); padding: 5px 15px; border-radius: 30px; font-size: 12px; font-weight: 600;">
-                            ${product.category}
+                            ${escapeHtml(product.category)}
                         </span>
                     </td>
                     <td>
                         <div style="display: flex; align-items: center; gap: 5px;">
                             ${stars}
-                            <span style="color: var(--secondary-text); font-size: 12px; margin-left: 5px;">(${product.sales_count || 0})</span>
+                            <span style="color: var(--secondary-text); font-size: 12px; margin-left: 5px;">(${product.review_count || 0})</span>
                         </div>
                     </td>
                     <td>
@@ -676,8 +782,13 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
         updatePaginationControls();
     }
 
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
     function showAdminConfirm(message, onConfirm) {
-        // 1. إنشاء overlay الخلفية
         const overlay = document.createElement('div');
         overlay.id = 'admin-confirm-overlay';
         overlay.style.position = 'fixed';
@@ -694,7 +805,6 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
         overlay.style.opacity = '0';
         overlay.style.transition = 'opacity 0.3s ease';
 
-        // 2. إنشاء نافذة الـ Popup
         const popup = document.createElement('div');
         popup.id = 'admin-confirm-popup';
         popup.style.backgroundColor = 'var(--card-bg, #ffffff)';
@@ -710,27 +820,24 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
         popup.style.transition = 'transform 0.25s ease';
         popup.style.border = '1px solid var(--pink, #F8BBD0)';
 
-        // محتوى البوب أب
         popup.innerHTML = `
-        <div style="font-size: 58px; margin-bottom: 12px;">⚠️</div>
-        <h3 style="font-size: 24px; font-weight: 600; margin-bottom: 12px;">Are you sure?</h3>
-        <p style="font-size: 16px; color: var(--secondary-text, #555); margin-bottom: 28px; line-height: 1.5;">${message}</p>
-        <div style="display: flex; gap: 15px; justify-content: center;">
-            <button id="confirm-cancel-btn" style="background: transparent; border: 2px solid var(--pink, #F8BBD0); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer; color: var(--text-color, #333); transition: all 0.2s;">Cancel</button>
-            <button id="confirm-ok-btn" style="background: #d9534f; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer; box-shadow: 0 4px 8px rgba(217,83,79,0.3); transition: all 0.2s;">Delete</button>
-        </div>
-    `;
+            <div style="font-size: 58px; margin-bottom: 12px;">⚠️</div>
+            <h3 style="font-size: 24px; font-weight: 600; margin-bottom: 12px;">Are you sure?</h3>
+            <p style="font-size: 16px; color: var(--secondary-text, #555); margin-bottom: 28px; line-height: 1.5;">${message}</p>
+            <div style="display: flex; gap: 15px; justify-content: center;">
+                <button id="confirm-cancel-btn" style="background: transparent; border: 2px solid var(--pink, #F8BBD0); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer; color: var(--text-color, #333); transition: all 0.2s;">Cancel</button>
+                <button id="confirm-ok-btn" style="background: #d9534f; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer; box-shadow: 0 4px 8px rgba(217,83,79,0.3); transition: all 0.2s;">Delete</button>
+            </div>
+        `;
 
         overlay.appendChild(popup);
         document.body.appendChild(overlay);
 
-        // ظهور الأنيميشن
         setTimeout(() => {
             overlay.style.opacity = '1';
             popup.style.transform = 'scale(1)';
         }, 10);
 
-        // إزالة البوب أب
         function closePopup() {
             overlay.style.opacity = '0';
             popup.style.transform = 'scale(0.9)';
@@ -739,19 +846,16 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
             }, 250);
         }
 
-        // دالة عرض رسالة النجاح (toast منتصف الصفحة)
-        function showSuccessToast() {
+        function showSuccessToast(message = 'Removed from the system!') {
             const toast = document.createElement('div');
-            toast.id = 'admin-success-toast';
             toast.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 12px;">
-
-                <div>
-                    <strong style="font-size: 18px;">Removed from the system!</strong>
-
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <i class="fa-solid fa-check-circle" style="font-size: 28px; color: #28a745;"></i>
+                    <div>
+                        <strong style="font-size: 18px;">${message}</strong>
+                    </div>
                 </div>
-            </div>
-        `;
+            `;
             toast.style.position = 'fixed';
             toast.style.top = '50%';
             toast.style.left = '50%';
@@ -763,17 +867,13 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
             toast.style.boxShadow = '0 20px 35px rgba(0,0,0,0.2)';
             toast.style.zIndex = '10000';
             toast.style.fontFamily = "'Poppins', sans-serif";
-            toast.style.borderRight = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderLeft = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderTop = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderBottom = '4px solid var(--pink, #F8BBD0)';
+            toast.style.border = '2px solid #28a745';
             toast.style.backdropFilter = 'blur(12px)';
             toast.style.opacity = '0';
             toast.style.transition = 'all 0.25s cubic-bezier(0.34, 1.2, 0.64, 1)';
             toast.style.fontWeight = '500';
             toast.style.textAlign = 'center';
             toast.style.minWidth = '280px';
-            toast.style.boxSizing = 'border-box';
 
             document.body.appendChild(toast);
 
@@ -782,7 +882,6 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
                 toast.style.transform = 'translate(-50%, -50%) scale(1)';
             }, 20);
 
-            // إخفاء الرسالة بعد 2.5 ثانية
             setTimeout(() => {
                 toast.style.opacity = '0';
                 toast.style.transform = 'translate(-50%, -50%) scale(0.95)';
@@ -792,7 +891,6 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
             }, 2500);
         }
 
-        // أحداث الأزرار
         const cancelBtn = popup.querySelector('#confirm-cancel-btn');
         const confirmBtn = popup.querySelector('#confirm-ok-btn');
 
@@ -800,17 +898,14 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
             closePopup();
         });
 
-        confirmBtn.addEventListener('click', () => {
-            // ✅ بدون حذف فعلي – فقط استدعاء callback إذا أردت تنفيذ شيء لاحقاً (مثل تحديث واجهة)
+        confirmBtn.addEventListener('click', async () => {
             if (onConfirm && typeof onConfirm === 'function') {
-                onConfirm();  // هون بتقدر تعمل أي شيء زي تحديث UI بدون حذف حقيقي
+                await onConfirm();
             }
             closePopup();
-            // عرض رسالة النجاح الجميلة في منتصف الصفحة
             showSuccessToast();
         });
 
-        // إغلاق عند الضغط على overlay
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) closePopup();
         });
@@ -828,14 +923,12 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
         const paginationDiv = document.getElementById('paginationControls');
         let html = '';
 
-        // Previous button
         if (currentPage > 1) {
             html += `<a href="#" onclick="changePage(${currentPage - 1}); return false;" class="page-item"><i class="fa-solid fa-chevron-left"></i></a>`;
         } else {
             html += `<span class="page-item disabled"><i class="fa-solid fa-chevron-left"></i></span>`;
         }
 
-        // Page numbers
         for (let i = 1; i <= totalPages; i++) {
             if (i === currentPage) {
                 html += `<span class="page-item active">${i}</span>`;
@@ -844,7 +937,6 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
             }
         }
 
-        // Next button
         if (currentPage < totalPages) {
             html += `<a href="#" onclick="changePage(${currentPage + 1}); return false;" class="page-item"><i class="fa-solid fa-chevron-right"></i></a>`;
         } else {
@@ -865,16 +957,13 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
         const priceRange = document.getElementById('priceFilter').value;
         const sortBy = document.getElementById('sortFilter').value;
 
-        // تطبيق الفلترة على كل المنتجات
         filteredProducts = productsArray.filter(product => {
             let showProduct = true;
 
-            // فلترة حسب التصنيف
             if (category && product.category !== category) {
                 showProduct = false;
             }
 
-            // فلترة حسب السعر
             if (priceRange && showProduct) {
                 const price = product.price;
                 if (priceRange === '0-25' && price > 25) showProduct = false;
@@ -886,7 +975,6 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
             return showProduct;
         });
 
-        // تطبيق الترتيب
         if (sortBy) {
             filteredProducts.sort((a, b) => {
                 if (sortBy === 'price-low') return a.price - b.price;
@@ -896,10 +984,7 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
             });
         }
 
-        // إعادة تعيين الصفحة الحالية
         currentPage = 1;
-
-        // عرض المنتجات المفلترة
         displayProducts();
     }
 
@@ -910,7 +995,6 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
         const addBtn = document.getElementById('addProductBtn');
 
         if (searchInput) {
-            // تأثيرات السيرش بار
             searchInput.addEventListener('focus', function() {
                 this.style.transform = 'translateY(-2px)';
             });
@@ -931,7 +1015,6 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
         }
 
         if (addBtn) {
-            // تأثيرات زر Add Product
             addBtn.addEventListener('mouseenter', function() {
                 this.querySelector('div:first-child').style.transform = 'rotate(90deg)';
             });
@@ -941,7 +1024,6 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
             });
         }
 
-        // إضافة تأثيرات للفلاتر
         const filterSelects = document.querySelectorAll('.filter-select');
         filterSelects.forEach(select => {
             select.addEventListener('change', function() {
@@ -954,11 +1036,9 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
             });
         });
 
-        // تشغيل الفلترة عند تحميل الصفحة
         filterProducts();
     });
 
-    // ===== ربط الفلاتر =====
     document.getElementById('categoryFilter')?.addEventListener('change', filterProducts);
     document.getElementById('priceFilter')?.addEventListener('change', filterProducts);
     document.getElementById('sortFilter')?.addEventListener('change', filterProducts);
@@ -968,7 +1048,6 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
         document.querySelectorAll('.filter-select').forEach(select => select.value = '');
         filterProducts();
 
-        // تأثير بسيط
         const filterSection = document.querySelector('.filters-section');
         filterSection.style.transform = 'scale(1.02)';
         setTimeout(() => {
@@ -985,14 +1064,18 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
         window.location.href = 'edit-product.php?id=' + id;
     }
 
-    function deleteProduct(id) {
-        showAdminConfirm('Are you sure you want to delete this product?', () => {
-
-        })
-
+    async function deleteProduct(id) {
+        showAdminConfirm('Are you sure you want to delete this product?', async () => {
+            const success = await deleteProductFromDB(id);
+            if (success) {
+                // إزالة المنتج من المصفوفة المحلية وتحديث العرض
+                const index = productsArray.findIndex(p => p.id == id);
+                if (index !== -1) productsArray.splice(index, 1);
+                filterProducts();
+            }
+        });
     }
 
-    // تحديد كل المنتجات
     document.getElementById('selectAll')?.addEventListener('change', function() {
         document.querySelectorAll('.product-checkbox').forEach(cb => {
             cb.checked = this.checked;
@@ -1007,10 +1090,8 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
         alert('Export products feature (Demo)');
     }
 
-
-
-    function bulkDelete() {
-        let selected = [];
+    async function bulkDelete() {
+        const selected = [];
         document.querySelectorAll('.product-checkbox:checked').forEach(cb => {
             selected.push(cb.value);
         });
@@ -1020,9 +1101,20 @@ $paginatedGames = array_slice($products, $offset, $perPage, true);
             return;
         }
 
-        showAdminConfirm('Are you sure you want to delete ' + selected.length + ' products?' , () =>{
-
-        } );
+        showAdminConfirm('Are you sure you want to delete ' + selected.length + ' products?', async () => {
+            const success = await bulkDeleteFromDB(selected);
+            if (success) {
+                // إزالة المنتجات المحددة من المصفوفة المحلية
+                for (const id of selected) {
+                    const index = productsArray.findIndex(p => p.id == id);
+                    if (index !== -1) productsArray.splice(index, 1);
+                }
+                filterProducts();
+                // إلغاء تحديد checkbox selectAll
+                const selectAll = document.getElementById('selectAll');
+                if (selectAll) selectAll.checked = false;
+            }
+        });
     }
 </script>
 

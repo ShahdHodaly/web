@@ -1,24 +1,91 @@
 <?php
 // print-order.php
 session_start();
-require_once 'orders-array.php';
+require_once 'db.php';
+
+$pdo = getDB();
 
 // Get order ID from query string
 $orderId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
+// جلب الطلب من قاعدة البيانات مع معلومات المستخدم
+$stmt = $pdo->prepare("
+    SELECT 
+        o.order_id,
+        o.order_number,
+        o.user_id,
+        o.status,
+        o.payment_method,
+        o.subtotal,
+        o.discount_amount,
+        o.gift_wrap_price,
+        o.total,
+        o.is_gift,
+        o.gift_message,
+        o.gift_box,
+        o.notes,
+        o.created_at,
+        u.name as customer_name,
+        u.email as customer_email
+    FROM orders o
+    JOIN users u ON o.user_id = u.user_id
+    WHERE o.order_id = ?
+");
+$stmt->execute([$orderId]);
+$orderData = $stmt->fetch(PDO::FETCH_ASSOC);
+
 // Validate order exists
-if (!isset($orders[$orderId])) {
+if (!$orderData) {
     die('<h2>Order not found</h2><a href="orders.php">Back to Orders</a>');
 }
 
-$order = $orders[$orderId];
+// جلب عناصر الطلب مع معلومات المنتجات
+$stmt = $pdo->prepare("
+    SELECT 
+        oi.product_id,
+        oi.quantity,
+        oi.unit_price,
+        p.name as product_name,
+        p.image as product_image
+    FROM order_items oi
+    JOIN products p ON oi.product_id = p.product_id
+    WHERE oi.order_id = ?
+");
+$stmt->execute([$orderId]);
+$orderItems = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// تنسيق بيانات الطلب
+$order = [
+        'order_number' => $orderData['order_number'],
+        'customer' => $orderData['customer_name'],
+        'customer_email' => $orderData['customer_email'],
+        'date' => $orderData['created_at'],
+        'status' => $orderData['status'],
+        'payment_method' => $orderData['payment_method'],
+        'notes' => $orderData['notes'],
+        'is_gift' => (bool)$orderData['is_gift'],
+        'gift_message' => $orderData['gift_message'],
+        'gift_box' => $orderData['gift_box'],
+        'gift_wrap_price' => (float)$orderData['gift_wrap_price'],
+        'products' => []
+];
+
+// تنسيق عناصر الطلب
+foreach ($orderItems as $item) {
+    $order['products'][] = [
+            'name' => $item['product_name'],
+            'price' => (float)$item['unit_price'],
+            'quantity' => (int)$item['quantity'],
+            'image' => $item['product_image']
+    ];
+}
 
 // Calculate subtotal (sum of products without gift wrap)
 $subtotal = 0;
 foreach ($order['products'] as $item) {
     $subtotal += $item['price'] * $item['quantity'];
 }
-$giftWrap = isset($order['gift_wrap_price']) ? (float)$order['gift_wrap_price'] : 0;
+$giftWrap = $order['gift_wrap_price'];
 $grandTotal = $subtotal + $giftWrap;
 
 // Format date
@@ -417,7 +484,7 @@ $formattedDate = $date->format('F j, Y');
         </div>
 
         <!-- Gift Information (if any) -->
-        <?php if (!empty($order['is_gift']) && $order['is_gift'] === true): ?>
+        <?php if ($order['is_gift'] === true): ?>
             <div class="gift-section">
                 <h4><i class="bi bi-gift-fill"></i> Gift Options</h4>
                 <?php if (!empty($order['gift_message'])): ?>

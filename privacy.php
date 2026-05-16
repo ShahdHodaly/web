@@ -1,4 +1,5 @@
 <?php
+session_start();
 $pageTitle = "Privacy Policy | Teddy Lap";
 include 'products.php';
 ?>

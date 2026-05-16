@@ -1,37 +1,71 @@
 <?php
 // search-coupons.php
 session_start();
+require_once 'db.php';
 
-// تضمين مصفوفة الكوبونات
-require_once 'coupons-array.php';
+$pdo = getDB();
 
 // معالجة البحث
 $query = isset($_GET['q']) ? trim($_GET['q']) : '';
 $results = [];
 $totalResults = 0;
 
-function smartSearch($text, $query) {
-    return preg_match('/\b' . preg_quote($query, '/') . '\b/i', $text);
-}
-// منطق البحث
-if (!empty($query) && isset($coupons)) {
-    foreach ($coupons as $id => $coupon) {
-        if (
-                smartSearch($coupon['code'], $query) ||
-                smartSearch($coupon['description'], $query) ||
-                smartSearch($coupon['discount_type'], $query) ||
-                smartSearch($coupon['status'], $query)
-        ) {
-            $results[$id] = $coupon;
-        }
+// منطق البحث - البحث باسم الكود فقط
+if (!empty($query)) {
+    $searchTerm = '%' . $query . '%';
+
+    $stmt = $pdo->prepare("
+        SELECT 
+            coupon_id,
+            code,
+            description,
+            discount_type,
+            discount_value,
+            min_order,
+            max_discount,
+            usage_limit,
+            used_count,
+            start_date,
+            expiry_date,
+            status::text as status
+        FROM coupons
+        WHERE code ILIKE ?
+        ORDER BY 
+            CASE status 
+                WHEN 'active' THEN 1 
+                WHEN 'scheduled' THEN 2 
+                ELSE 3 
+            END,
+            coupon_id DESC
+    ");
+    $stmt->execute([$searchTerm]);
+    $couponsData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // تنسيق النتائج
+    foreach ($couponsData as $coupon) {
+        $results[$coupon['coupon_id']] = [
+                'id' => $coupon['coupon_id'],
+                'code' => $coupon['code'],
+                'description' => $coupon['description'] ?? '',
+                'discount_type' => $coupon['discount_type'],
+                'discount_value' => (float)$coupon['discount_value'],
+                'min_order' => (float)$coupon['min_order'],
+                'max_discount' => (float)$coupon['max_discount'],
+                'usage_limit' => (int)$coupon['usage_limit'],
+                'used_count' => (int)$coupon['used_count'],
+                'start_date' => $coupon['start_date'],
+                'expiry_date' => $coupon['expiry_date'],
+                'status' => $coupon['status']
+        ];
     }
+
     $totalResults = count($results);
 }
 
 // Pagination للنتائج
 $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
 $perPage = 10;
-$totalPages = ceil($totalResults / $perPage);
+$totalPages = $totalResults > 0 ? ceil($totalResults / $perPage) : 1;
 $offset = ($page - 1) * $perPage;
 $paginatedResults = array_slice($results, $offset, $perPage, true);
 ?>
@@ -56,7 +90,6 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
         .admin-wrapper { display: flex; align-items: flex-start; min-height: 100vh; }
         .admin-main { flex: 1; width: calc(100% - 280px); padding: 30px 35px; background-color: var(--bg-color); box-sizing: border-box; }
 
-        /* Search Section */
         .search-section {
             background: var(--card-bg);
             border-radius: 30px;
@@ -139,7 +172,6 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             border-color: #ff6b6b;
         }
 
-        /* Results Header */
         .results-header {
             display: flex;
             justify-content: space-between;
@@ -157,7 +189,6 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             font-size: 20px;
         }
 
-        /* Table */
         .table-container {
             background: var(--card-bg);
             padding: 25px;
@@ -217,6 +248,7 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
         .status-active { background: rgba(76, 175, 80, 0.2); color: #4CAF50; }
         .status-scheduled { background: rgba(33, 150, 243, 0.2); color: #2196F3; }
         .status-expired { background: rgba(244, 67, 54, 0.2); color: #F44336; }
+        .status-disabled { background: rgba(128, 128, 128, 0.2); color: #666; }
 
         .usage-progress {
             width: 100%;
@@ -234,6 +266,10 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
         .progress-bar.warning { background: linear-gradient(90deg, #FF9800, #FFB74D); }
         .progress-bar.danger { background: linear-gradient(90deg, #F44336, #FF8A80); }
 
+        .action-buttons {
+            display: flex;
+            gap: 8px;
+        }
         .action-btn {
             width: 32px;
             height: 32px;
@@ -253,7 +289,6 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             transform: translateY(-2px) scale(1.1);
         }
 
-        /* Pagination */
         .pagination-section {
             display: flex;
             justify-content: space-between;
@@ -288,6 +323,11 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             color: white;
             transform: scale(1.1);
         }
+        .page-item.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
 
         .no-results {
             text-align: center;
@@ -305,6 +345,28 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             font-size: 24px;
             color: var(--text-color);
             margin-bottom: 10px;
+        }
+
+        .suggestions {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .suggestion-chip {
+            padding: 8px 20px;
+            background: var(--lavender);
+            border-radius: 50px;
+            color: #000;
+            text-decoration: none;
+            font-size: 14px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        .suggestion-chip:hover {
+            background: var(--pink);
+            transform: translateY(-2px);
         }
 
         @keyframes fadeInUp {
@@ -335,16 +397,19 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             <form action="search-coupons.php" method="GET" id="searchForm">
                 <div class="search-row">
                     <div class="search-input-group">
-                        <label><i class="fa-solid fa-ticket"></i> Search by</label>
+                        <label><i class="fa-solid fa-ticket"></i> Search by Coupon Code</label>
                         <input type="text"
                                name="q"
                                id="searchInput"
                                value="<?= htmlspecialchars($query) ?>"
-                               placeholder="Coupon code, description, type, status...">
+                               placeholder="Enter coupon code to search...">
                     </div>
                     <button type="submit" class="search-btn">
                         <i class="fa-solid fa-search"></i> Search
                     </button>
+                    <a href="search-coupons.php" class="search-btn reset-btn">
+                        <i class="fa-solid fa-rotate-left"></i> Reset
+                    </a>
                 </div>
             </form>
         </div>
@@ -356,7 +421,7 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             <div class="results-header">
                 <div class="results-count">
                     Found <strong><?= $totalResults ?></strong> coupon<?= $totalResults != 1 ? 's' : '' ?>
-                    for "<strong><?= htmlspecialchars($query) ?></strong>"
+                    with code containing "<strong><?= htmlspecialchars($query) ?></strong>"
                 </div>
                 <a href="coupons.php" class="filter-chip" style="padding: 8px 20px; background: var(--lavender); border-radius: 50px; color: #000; text-decoration: none;">
                     <i class="fa-solid fa-arrow-left"></i> Back to Coupons
@@ -380,51 +445,57 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
                         </thead>
                         <tbody>
                         <?php foreach($paginatedResults as $id => $coupon): ?>
-                        <tr>
-                            <td><span class="coupon-code"><?= $coupon['code'] ?></span>
-                            <td style="max-width: 200px;"><?= htmlspecialchars($coupon['description']) ?>
-                            <td>
-                                <?php if ($coupon['discount_type'] == 'percentage'): ?>
-                                    <span class="discount-badge discount-percentage"><?= $coupon['discount_value'] ?>%</span>
-                                    <?php if ($coupon['max_discount'] > 0): ?>
-                                        <div><small>Max $<?= $coupon['max_discount'] ?></small></div>
+                            <tr>
+                                <td><span class="coupon-code"><?= htmlspecialchars($coupon['code']) ?></span></td>
+                                <td style="max-width: 200px;"><?= htmlspecialchars($coupon['description'] ?? 'No description') ?></td>
+                                <td>
+                                    <?php if ($coupon['discount_type'] == 'percentage'): ?>
+                                        <span class="discount-badge discount-percentage"><?= $coupon['discount_value'] ?>% OFF</span>
+                                        <?php if ($coupon['max_discount'] > 0): ?>
+                                            <div><small>Max $<?= number_format($coupon['max_discount'], 2) ?></small></div>
+                                        <?php endif; ?>
+                                    <?php elseif ($coupon['discount_type'] == 'fixed'): ?>
+                                        <span class="discount-badge discount-fixed">$<?= number_format($coupon['discount_value'], 2) ?> OFF</span>
+                                    <?php else: ?>
+                                        <span class="discount-badge discount-shipping">Free Shipping</span>
                                     <?php endif; ?>
-                                <?php elseif ($coupon['discount_type'] == 'fixed'): ?>
-                                    <span class="discount-badge discount-fixed">$$<?= $coupon['discount_value'] ?></span>
-                                <?php else: ?>
-                                    <span class="discount-badge discount-shipping">Free Shipping</span>
-                                <?php endif; ?>
-
-                            <td><?= $coupon['min_order'] > 0 ? '$' . $coupon['min_order'] : 'No min' ?>
-                            <td style="min-width: 100px;">
-                                <strong><?= $coupon['used_count'] ?></strong>/<?= $coupon['usage_limit'] ?>
-                                <?php
-                                $percentage = ($coupon['used_count'] / $coupon['usage_limit']) * 100;
-                                $barClass = $percentage < 50 ? 'active' : ($percentage < 80 ? 'warning' : 'danger');
-                                ?>
-                                <div class="usage-progress">
-                                    <div class="progress-bar <?= $barClass ?>" style="width: <?= $percentage ?>%"></div>
-                                </div>
-
-                            <td>
-                                <div><small>From</small> <?= date('M d, Y', strtotime($coupon['start_date'])) ?></div>
-                                <div><small>To</small> <?= date('M d, Y', strtotime($coupon['expiry_date'])) ?></div>
-
-                            <td><span class="status-badge status-<?= $coupon['status'] ?>"><?= ucfirst($coupon['status']) ?></span>
-                            <td>
-                                <div class="action-buttons">
-                                    <button class="action-btn" onclick="viewCoupon(<?= $id ?>)" title="View">
-                                        <i class="fa-solid fa-eye"></i>
-                                    </button>
-                                    <button class="action-btn" onclick="editCoupon(<?= $id ?>)" title="Edit">
-                                        <i class="fa-solid fa-pen"></i>
-                                    </button>
-                                    <button class="action-btn" onclick="copyCoupon('<?= $coupon['code'] ?>')" title="Copy">
-                                        <i class="fa-solid fa-copy"></i>
-                                    </button>
-                                </div>
-
-                                <?php endforeach; ?>
+                                </td>
+                                <td><?= $coupon['min_order'] > 0 ? '$' . number_format($coupon['min_order'], 2) : 'No min' ?></td>
+                                <td style="min-width: 100px;">
+                                    <strong><?= $coupon['used_count'] ?></strong>/<?= $coupon['usage_limit'] ?>
+                                    <?php
+                                    if ($coupon['usage_limit'] > 0) {
+                                        $percentage = ($coupon['used_count'] / $coupon['usage_limit']) * 100;
+                                        $barClass = $percentage < 50 ? 'active' : ($percentage < 80 ? 'warning' : 'danger');
+                                    } else {
+                                        $percentage = 0;
+                                        $barClass = 'active';
+                                    }
+                                    ?>
+                                    <div class="usage-progress">
+                                        <div class="progress-bar <?= $barClass ?>" style="width: <?= $percentage ?>%"></div>
+                                    </div>
+                                </td>
+                                <td>
+                                    <div><small>From</small> <?= date('M d, Y', strtotime($coupon['start_date'])) ?></div>
+                                    <div><small>To</small> <?= date('M d, Y', strtotime($coupon['expiry_date'])) ?></div>
+                                </td>
+                                <td><span class="status-badge status-<?= $coupon['status'] ?>"><?= ucfirst($coupon['status']) ?></span></td>
+                                <td>
+                                    <div class="action-buttons">
+                                        <button class="action-btn" onclick="viewCoupon(<?= $id ?>)" title="View">
+                                            <i class="fa-solid fa-eye"></i>
+                                        </button>
+                                        <button class="action-btn" onclick="editCoupon(<?= $id ?>)" title="Edit">
+                                            <i class="fa-solid fa-pen"></i>
+                                        </button>
+                                        <button class="action-btn" onclick="copyCoupon('<?= htmlspecialchars($coupon['code']) ?>')" title="Copy Code">
+                                            <i class="fa-solid fa-copy"></i>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>
@@ -442,9 +513,27 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
                                 <span class="page-item disabled"><i class="fa-solid fa-chevron-left"></i></span>
                             <?php endif; ?>
 
-                            <?php for($i = 1; $i <= $totalPages; $i++): ?>
+                            <?php
+                            $startPage = max(1, $page - 2);
+                            $endPage = min($totalPages, $page + 2);
+
+                            if ($startPage > 1): ?>
+                                <a href="?q=<?= urlencode($query) ?>&page=1" class="page-item">1</a>
+                                <?php if ($startPage > 2): ?>
+                                    <span class="page-item disabled">...</span>
+                                <?php endif; ?>
+                            <?php endif; ?>
+
+                            <?php for($i = $startPage; $i <= $endPage; $i++): ?>
                                 <a href="?q=<?= urlencode($query) ?>&page=<?= $i ?>" class="page-item <?= $i == $page ? 'active' : '' ?>"><?= $i ?></a>
                             <?php endfor; ?>
+
+                            <?php if ($endPage < $totalPages): ?>
+                                <?php if ($endPage < $totalPages - 1): ?>
+                                    <span class="page-item disabled">...</span>
+                                <?php endif; ?>
+                                <a href="?q=<?= urlencode($query) ?>&page=<?= $totalPages ?>" class="page-item"><?= $totalPages ?></a>
+                            <?php endif; ?>
 
                             <?php if ($page < $totalPages): ?>
                                 <a href="?q=<?= urlencode($query) ?>&page=<?= $page + 1 ?>" class="page-item"><i class="fa-solid fa-chevron-right"></i></a>
@@ -460,10 +549,33 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
                     <i class="fa-solid fa-ticket"></i>
                     <h3>No coupons found</h3>
                     <p style="color: var(--secondary-text); margin-top: 10px;">
-                        Try a different search term
+                        No coupons found with code containing "<strong><?= htmlspecialchars($query) ?></strong>"
                     </p>
+                    <div class="suggestions">
+                        <a href="coupons.php" class="suggestion-chip">
+                            <i class="fa-solid fa-eye"></i> View All Coupons
+                        </a>
+                        <a href="add-coupon.php" class="suggestion-chip">
+                            <i class="fa-solid fa-plus"></i> Add New Coupon
+                        </a>
+                    </div>
                 </div>
             <?php endif; ?>
+
+        <?php else: ?>
+            <!-- No search criteria entered -->
+            <div class="no-results">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <h3>Enter a coupon code to search</h3>
+                <p style="color: var(--secondary-text); margin-top: 10px;">
+                    Please enter a coupon code to search for.
+                </p>
+                <div class="suggestions">
+                    <a href="coupons.php" class="suggestion-chip">
+                        <i class="fa-solid fa-eye"></i> View All Coupons
+                    </a>
+                </div>
+            </div>
         <?php endif; ?>
     </main>
 </div>
@@ -480,6 +592,8 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
     function copyCoupon(code) {
         navigator.clipboard.writeText(code).then(() => {
             alert('Coupon code copied: ' + code);
+        }).catch(() => {
+            alert('Failed to copy coupon code');
         });
     }
 
@@ -493,6 +607,16 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             this.style.transform = 'translateY(0)';
         });
     }
+
+    // Prevent empty search
+    document.getElementById('searchForm').addEventListener('submit', function(e) {
+        const query = document.getElementById('searchInput').value.trim();
+        if (!query) {
+            e.preventDefault();
+            alert('Please enter a coupon code to search');
+            return false;
+        }
+    });
 </script>
 
 <script>

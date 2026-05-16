@@ -1,36 +1,60 @@
 <?php
 // search-users.php
 session_start();
+require_once 'db.php';
 
-// تضمين مصفوفة المستخدمين
-require_once 'users-array.php';
+$pdo = getDB();
 
-function smartSearch($text, $query) {
-    return preg_match('/\b' . preg_quote($query, '/') . '\b/i', $text);
-}
 // معالجة البحث
 $query = isset($_GET['q']) ? trim($_GET['q']) : '';
 $results = [];
 $totalResults = 0;
 
-// منطق البحث
-if (!empty($query) && isset($users)) {
-    foreach ($users as $id => $user) {
-        if (
-                smartSearch($user['name'], $query) ||
-                smartSearch($user['email'], $query) ||
-                smartSearch($user['role'], $query)
-        ) {
-            $results[$id] = $user;
-        }
+// منطق البحث - البحث بالاسم فقط
+if (!empty($query)) {
+    $searchTerm = '%' . $query . '%';
+
+    $stmt = $pdo->prepare("
+        SELECT 
+            u.user_id as id,
+            u.name,
+            u.email,
+            u.role::text as role,
+            u.status::text as status,
+            u.avatar,
+            u.created_at as joined,
+            COUNT(o.order_id) as orders_count,
+            COALESCE(SUM(o.total), 0) as total_spent
+        FROM users u
+        LEFT JOIN orders o ON u.user_id = o.user_id AND o.status != 'cancelled'
+        WHERE u.name ILIKE ?
+        GROUP BY u.user_id, u.name, u.email, u.role, u.status, u.avatar, u.created_at
+        ORDER BY u.name ASC
+    ");
+    $stmt->execute([$searchTerm]);
+    $usersData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // تنسيق النتائج
+    foreach ($usersData as $user) {
+        $results[$user['id']] = [
+                'name' => $user['name'],
+                'email' => $user['email'],
+                'role' => $user['role'],
+                'status' => $user['status'],
+                'avatar' => $user['avatar'] ?: 'https://ui-avatars.com/api/?name=' . urlencode($user['name']) . '&background=F8BBD0&color=000&size=40',
+                'joined' => $user['joined'],
+                'orders' => (int)$user['orders_count'],
+                'spent' => (float)$user['total_spent']
+        ];
     }
+
     $totalResults = count($results);
 }
 
 // Pagination للنتائج
 $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
 $perPage = 10;
-$totalPages = ceil($totalResults / $perPage);
+$totalPages = $totalResults > 0 ? ceil($totalResults / $perPage) : 1;
 $offset = ($page - 1) * $perPage;
 $paginatedResults = array_slice($results, $offset, $perPage, true);
 ?>
@@ -216,7 +240,6 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             display: inline-block;
         }
         .role-admin { background: var(--lavender); color: #000; }
-        .role-moderator { background: var(--primary); color: #000; }
         .role-customer { background: var(--pink); color: #000; }
 
         .status-badge {
@@ -287,6 +310,11 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             color: white;
             transform: scale(1.1);
         }
+        .page-item.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
 
         /* No Results */
         .no-results {
@@ -305,6 +333,27 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             font-size: 24px;
             color: var(--text-color);
             margin-bottom: 10px;
+        }
+
+        .suggestions {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .suggestion-chip {
+            padding: 8px 20px;
+            background: var(--lavender);
+            border-radius: 50px;
+            color: #000;
+            text-decoration: none;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+        .suggestion-chip:hover {
+            background: var(--pink);
+            transform: translateY(-2px);
         }
 
         @keyframes fadeInUp {
@@ -335,17 +384,19 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             <form action="search-users.php" method="GET" id="searchForm">
                 <div class="search-row">
                     <div class="search-input-group">
-                        <label><i class="fa-solid fa-search"></i> Search by</label>
+                        <label><i class="fa-solid fa-search"></i> Search by Name</label>
                         <input type="text"
                                name="q"
                                id="searchInput"
                                value="<?= htmlspecialchars($query) ?>"
-                               placeholder="Name, email, role, status...">
+                               placeholder="Enter user name to search...">
                     </div>
                     <button type="submit" class="search-btn">
                         <i class="fa-solid fa-search"></i> Search
                     </button>
-
+                    <a href="search-users.php" class="search-btn reset-btn">
+                        <i class="fa-solid fa-rotate-left"></i> Reset
+                    </a>
                 </div>
             </form>
         </div>
@@ -356,8 +407,8 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             <!-- Results Header -->
             <div class="results-header">
                 <div class="results-count">
-                    Found <strong><?= $totalResults ?></strong> result<?= $totalResults != 1 ? 's' : '' ?>
-                    for "<strong><?= htmlspecialchars($query) ?></strong>"
+                    Found <strong><?= $totalResults ?></strong> user<?= $totalResults != 1 ? 's' : '' ?>
+                    with name containing "<strong><?= htmlspecialchars($query) ?></strong>"
                 </div>
                 <a href="users.php" class="filter-chip" style="padding: 8px 20px; background: var(--lavender); border-radius: 50px; color: #000; text-decoration: none;">
                     <i class="fa-solid fa-arrow-left"></i> Back to Users
@@ -380,74 +431,93 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
                         </thead>
                         <tbody>
                         <?php foreach($paginatedResults as $id => $user): ?>
-                        <tr>
-                            <td>
-                                <div class="user-info">
-                                    <div class="user-avatar">
-                                        <img src="<?= $user['avatar'] ?>" alt="<?= $user['name'] ?>">
+                            <tr>
+                                <td>
+                                    <div class="user-info">
+                                        <div class="user-avatar">
+                                            <img src="<?= htmlspecialchars($user['avatar']) ?>" alt="<?= htmlspecialchars($user['name']) ?>" onerror="this.src='images/teddy4.png'">
+                                        </div>
+                                        <div>
+                                            <div style="font-weight: 600;"><?= htmlspecialchars($user['name']) ?></div>
+                                            <div style="font-size: 11px; color: var(--secondary-text);"><?= htmlspecialchars($user['email']) ?></div>
+                                        </div>
                                     </div>
-                                    <div>
-                                        <div style="font-weight: 600;"><?= htmlspecialchars($user['name']) ?></div>
-                                        <div style="font-size: 11px; color: var(--secondary-text);"><?= htmlspecialchars($user['email']) ?></div>
+                                </td>
+                                <td>
+                                <span class="role-badge role-<?= strtolower($user['role']) ?>">
+                                    <?= htmlspecialchars($user['role']) ?>
+                                </span>
+                                </td>
+                                <td>
+                                <span class="status-badge status-<?= $user['status'] ?>">
+                                    <?= ucfirst($user['status']) ?>
+                                </span>
+                                </td>
+                                <td><?= date('M d, Y', strtotime($user['joined'])) ?></td>
+                                <td style="text-align: center;"><?= $user['orders'] ?></td>
+                                <td class="product-price">$<?= number_format($user['spent'], 2) ?></td>
+                                <td>
+                                    <div class="action-buttons">
+                                        <button class="action-btn view" onclick="viewUser(<?= $id ?>)" title="View">
+                                            <i class="fa-solid fa-eye"></i>
+                                        </button>
+                                        <button class="action-btn edit" onclick="editUser(<?= $id ?>)" title="Edit">
+                                            <i class="fa-solid fa-pen"></i>
+                                        </button>
+                                        <button class="action-btn delete" onclick="deleteUser(<?= $id ?>)" title="Delete">
+                                            <i class="fa-solid fa-trash"></i>
+                                        </button>
                                     </div>
-                                </div>
-
-                            <td>
-                                    <span class="role-badge role-<?= strtolower($user['role']) ?>">
-                                        <?= htmlspecialchars($user['role']) ?>
-                                    </span>
-
-                            <td>
-                                    <span class="status-badge status-<?= $user['status'] ?>">
-                                        <?= ucfirst($user['status']) ?>
-                                    </span>
-
-                            <td><?= date('M d, Y', strtotime($user['joined'])) ?>
-                            <td style="text-align: center;"><?= $user['orders'] ?>
-                            <td class="product-price">$<?= number_format($user['spent'], 2) ?>
-                            <td>
-                                <div class="action-buttons">
-                                    <button class="action-btn view" onclick="viewUser(<?= $id ?>)" title="View">
-                                        <i class="fa-solid fa-eye"></i>
-                                    </button>
-                                    <button class="action-btn edit" onclick="editUser(<?= $id ?>)" title="Edit">
-                                        <i class="fa-solid fa-pen"></i>
-                                    </button>
-                                    <button class="action-btn delete" onclick="deleteUser(<?= $id ?>)" title="Delete">
-                                        <i class="fa-solid fa-trash"></i>
-                                    </button>
-                                </div>
-
-
-                                <?php endforeach; ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
                         </tbody>
+                    </table>
 
-
-                        <!-- Pagination -->
-                        <?php if ($totalPages > 1): ?>
-                            <div class="pagination-section">
-                                <div class="pagination-info">
-                                    Showing <strong><?= $offset + 1 ?>-<?= min($offset + $perPage, $totalResults) ?></strong> of <strong><?= $totalResults ?></strong> results
-                                </div>
-                                <div class="pagination">
-                                    <?php if ($page > 1): ?>
-                                        <a href="?q=<?= urlencode($query) ?>&page=<?= $page - 1 ?>" class="page-item"><i class="fa-solid fa-chevron-left"></i></a>
-                                    <?php else: ?>
-                                        <span class="page-item disabled"><i class="fa-solid fa-chevron-left"></i></span>
-                                    <?php endif; ?>
-
-                                    <?php for($i = 1; $i <= $totalPages; $i++): ?>
-                                        <a href="?q=<?= urlencode($query) ?>&page=<?= $i ?>" class="page-item <?= $i == $page ? 'active' : '' ?>"><?= $i ?></a>
-                                    <?php endfor; ?>
-
-                                    <?php if ($page < $totalPages): ?>
-                                        <a href="?q=<?= urlencode($query) ?>&page=<?= $page + 1 ?>" class="page-item"><i class="fa-solid fa-chevron-right"></i></a>
-                                    <?php else: ?>
-                                        <span class="page-item disabled"><i class="fa-solid fa-chevron-right"></i></span>
-                                    <?php endif; ?>
-                                </div>
+                    <!-- Pagination -->
+                    <?php if ($totalPages > 1): ?>
+                        <div class="pagination-section">
+                            <div class="pagination-info">
+                                Showing <strong><?= $offset + 1 ?>-<?= min($offset + $perPage, $totalResults) ?></strong> of <strong><?= $totalResults ?></strong> results
                             </div>
-                        <?php endif; ?>
+                            <div class="pagination">
+                                <?php if ($page > 1): ?>
+                                    <a href="?q=<?= urlencode($query) ?>&page=<?= $page - 1 ?>" class="page-item"><i class="fa-solid fa-chevron-left"></i></a>
+                                <?php else: ?>
+                                    <span class="page-item disabled"><i class="fa-solid fa-chevron-left"></i></span>
+                                <?php endif; ?>
+
+                                <?php
+                                $startPage = max(1, $page - 2);
+                                $endPage = min($totalPages, $page + 2);
+
+                                if ($startPage > 1): ?>
+                                    <a href="?q=<?= urlencode($query) ?>&page=1" class="page-item">1</a>
+                                    <?php if ($startPage > 2): ?>
+                                        <span class="page-item disabled">...</span>
+                                    <?php endif; ?>
+                                <?php endif; ?>
+
+                                <?php for($i = $startPage; $i <= $endPage; $i++): ?>
+                                    <a href="?q=<?= urlencode($query) ?>&page=<?= $i ?>"
+                                       class="page-item <?= $i == $page ? 'active' : '' ?>"><?= $i ?></a>
+                                <?php endfor; ?>
+
+                                <?php if ($endPage < $totalPages): ?>
+                                    <?php if ($endPage < $totalPages - 1): ?>
+                                        <span class="page-item disabled">...</span>
+                                    <?php endif; ?>
+                                    <a href="?q=<?= urlencode($query) ?>&page=<?= $totalPages ?>" class="page-item"><?= $totalPages ?></a>
+                                <?php endif; ?>
+
+                                <?php if ($page < $totalPages): ?>
+                                    <a href="?q=<?= urlencode($query) ?>&page=<?= $page + 1 ?>" class="page-item"><i class="fa-solid fa-chevron-right"></i></a>
+                                <?php else: ?>
+                                    <span class="page-item disabled"><i class="fa-solid fa-chevron-right"></i></span>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    <?php endif; ?>
                 </div>
             <?php else: ?>
                 <!-- No Results -->
@@ -455,10 +525,33 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
                     <i class="fa-solid fa-users-slash"></i>
                     <h3>No users found</h3>
                     <p style="color: var(--secondary-text); margin-top: 10px;">
-                        Try a different search term
+                        No users found with name containing "<strong><?= htmlspecialchars($query) ?></strong>"
                     </p>
+                    <div class="suggestions">
+                        <a href="users.php" class="suggestion-chip">
+                            <i class="fa-solid fa-eye"></i> View All Users
+                        </a>
+                        <a href="search-users.php" class="suggestion-chip">
+                            <i class="fa-solid fa-arrow-left"></i> Try Another Search
+                        </a>
+                    </div>
                 </div>
             <?php endif; ?>
+
+        <?php else: ?>
+            <!-- No search criteria entered -->
+            <div class="no-results">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <h3>Enter a name to search</h3>
+                <p style="color: var(--secondary-text); margin-top: 10px;">
+                    Please enter a user name to search for.
+                </p>
+                <div class="suggestions">
+                    <a href="users.php" class="suggestion-chip">
+                        <i class="fa-solid fa-eye"></i> View All Users
+                    </a>
+                </div>
+            </div>
         <?php endif; ?>
     </main>
 </div>
@@ -473,7 +566,7 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
     }
 
     function deleteUser(id) {
-        if(confirm('Are you sure you want to delete this user?')) {
+        if(confirm('Are you sure you want to delete this user? This action cannot be undone.')) {
             window.location.href = 'delete-user.php?id=' + id;
         }
     }
@@ -488,6 +581,16 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             this.style.transform = 'translateY(0)';
         });
     }
+
+    // Prevent empty search
+    document.getElementById('searchForm').addEventListener('submit', function(e) {
+        const query = document.getElementById('searchInput').value.trim();
+        if (!query) {
+            e.preventDefault();
+            alert('Please enter a name to search');
+            return false;
+        }
+    });
 </script>
 
 <script>

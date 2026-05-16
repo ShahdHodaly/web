@@ -1,4 +1,5 @@
 <?php
+session_start();
 $pageTitle = "About Us | Teddy Lap";
 ?>
 

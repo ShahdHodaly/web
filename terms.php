@@ -1,4 +1,5 @@
 <?php
+session_start();
 $pageTitle = "Terms of Service | Teddy Lap";
 include 'products.php';
 ?>

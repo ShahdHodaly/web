@@ -1,28 +1,35 @@
 <?php
 // add-product.php
 session_start();
+require_once 'db.php';
 
-// تضمين مصفوفة المنتجات (لجلب آخر ID)
-require_once 'products.php';
+$pdo = getDB();
+
+// جلب جميع التصنيفات للقائمة المنسدلة
+$stmt = $pdo->query("SELECT category_id, name FROM categories ORDER BY name");
+$categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // متغيرات للتخزين المؤقت
 $product_name = '';
 $product_price = '';
-$product_category = '';
+$product_category_id = '';
 $product_description = '';
 $product_image = '';
 $product_stock = '';
+$product_sale_price = '';
 $errors = [];
 $success = false;
+$new_product_id = null;
 
 // معالجة إرسال النموذج
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // جلب البيانات وتنظيفها
     $product_name = trim($_POST['product_name'] ?? '');
     $product_price = trim($_POST['product_price'] ?? '');
-    $product_category = trim($_POST['product_category'] ?? '');
+    $product_category_id = (int)($_POST['product_category'] ?? 0);
     $product_description = trim($_POST['product_description'] ?? '');
     $product_stock = trim($_POST['product_stock'] ?? '');
+    $product_sale_price = trim($_POST['product_sale_price'] ?? '');
 
     // التحقق من صحة البيانات
     if (empty($product_name)) {
@@ -35,7 +42,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = 'Product price must be a positive number';
     }
 
-    if (empty($product_category)) {
+    if (empty($product_category_id) || $product_category_id <= 0) {
         $errors[] = 'Product category is required';
     }
 
@@ -43,7 +50,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = 'Stock must be a positive number';
     }
 
+    if (!empty($product_sale_price)) {
+        if (!is_numeric($product_sale_price) || $product_sale_price < 0) {
+            $errors[] = 'Sale price must be a positive number';
+        } elseif ($product_sale_price >= $product_price) {
+            $errors[] = 'Sale price must be less than original price';
+        }
+    }
+
     // معالجة رفع الصورة
+    $product_image = 'images/placeholder.png'; // صورة افتراضية
+
     if (isset($_FILES['product_image']) && $_FILES['product_image']['error'] === UPLOAD_ERR_OK) {
         $file = $_FILES['product_image'];
         $allowed_types = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
@@ -56,7 +73,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             // إنشاء اسم فريد للصورة
             $extension = pathinfo($file['name'], PATHINFO_EXTENSION);
-            $new_filename = strtolower(str_replace(' ', '_', $product_name)) . '_' . time() . '.' . $extension;
+            $new_filename = strtolower(preg_replace('/[^a-zA-Z0-9]/', '_', $product_name)) . '_' . time() . '.' . $extension;
             $upload_path = 'uploads/products/' . $new_filename;
 
             // التأكد من وجود المجلد
@@ -70,34 +87,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $errors[] = 'Failed to upload image';
             }
         }
-    } else {
-        // إذا لم يتم رفع صورة، استخدم صورة افتراضية
-        $product_image = 'images/default-product.png';
     }
 
-    // إذا لم يكن هناك أخطاء، احفظ المنتج
+    // إذا لم يكن هناك أخطاء، احفظ المنتج في قاعدة البيانات
     if (empty($errors)) {
-        // حساب آخر ID
-        $new_id = count($products) + 1;
+        try {
+            $pdo->beginTransaction();
 
-        // إنشاء المنتج الجديد
-        $new_product = [
-            'name' => $product_name,
-            'price' => (float)$product_price,
-            'category' => $product_category,
-            'description' => $product_description,
-            'image' => $product_image,
-            'sales_count' => 0,
-            'avg_rating' => 0,
-            'stock' => $product_stock ? (int)$product_stock : 0,
-            'created_at' => date('Y-m-d H:i:s')
-        ];
+            // إضافة المنتج الجديد
+            $stmt = $pdo->prepare("
+                INSERT INTO products (name, description, price, category_id, image, stock, sale_price, sales_count, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, NOW())
+                RETURNING product_id
+            ");
 
+            $stmt->execute([
+                    $product_name,
+                    $product_description,
+                    $product_price,
+                    $product_category_id,
+                    $product_image,
+                    $product_stock ? (int)$product_stock : 0,
+                    !empty($product_sale_price) ? $product_sale_price : null
+            ]);
 
-        $success = true;
+            $new_product_id = $stmt->fetchColumn();
 
-        // إعادة تعيين النموذج
-        $product_name = $product_price = $product_category = $product_description = $product_stock = '';
+            $pdo->commit();
+            $success = true;
+
+            // إعادة تعيين النموذج
+            $product_name = $product_price = $product_category_id = $product_description = $product_stock = $product_sale_price = '';
+
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            $errors[] = 'Database error: ' . $e->getMessage();
+        }
     }
 }
 ?>
@@ -344,10 +369,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
 
             <!-- Success Message -->
-            <?php if ($success): ?>
+            <?php if ($success && $new_product_id): ?>
                 <div class="alert alert-success">
                     <i class="fa-solid fa-check-circle"></i>
-                    <span>Product added successfully! <a href="product-admin.php" style="color: #4CAF50; text-decoration: underline;">View all products</a></span>
+                    <span>Product added successfully!
+                        <a href="product_details-admin.php?id=<?= $new_product_id ?>" style="color: #4CAF50; text-decoration: underline;">View product</a> or
+                        <a href="product-admin.php" style="color: #4CAF50; text-decoration: underline;">view all products</a>
+                    </span>
                 </div>
             <?php endif; ?>
 
@@ -377,18 +405,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <input type="number" step="0.01" name="product_price" class="form-control" value="<?= htmlspecialchars($product_price) ?>" placeholder="0.00" required>
                 </div>
 
+                <!-- Sale Price -->
+                <div class="form-group">
+                    <label><i class="fa-solid fa-tag"></i> Sale Price</label>
+                    <input type="number" step="0.01" name="product_sale_price" class="form-control" value="<?= htmlspecialchars($product_sale_price) ?>" placeholder="Leave empty for no sale">
+                    <small style="color: var(--secondary-text);">Optional: Enter sale price (must be less than original price)</small>
+                </div>
+
                 <!-- Product Category -->
                 <div class="form-group">
                     <label><i class="fa-solid fa-list"></i> Category <span class="required">*</span></label>
                     <select name="product_category" class="form-control category-select" required>
-                        <option value="" disabled <?= empty($product_category) ? 'selected' : '' ?>>Select a category</option>
-                        <option value="Teddy Bear" <?= $product_category == 'Teddy Bear' ? 'selected' : '' ?>>Teddy Bear</option>
-                        <option value="Dolls & Barbie" <?= $product_category == 'Dolls & Barbie' ? 'selected' : '' ?>>Dolls & Barbie</option>
-                        <option value="Building Toys" <?= $product_category == 'Building Toys' ? 'selected' : '' ?>>Building Toys</option>
-                        <option value="Cars & Vehicles" <?= $product_category == 'Cars & Vehicles' ? 'selected' : '' ?>>Cars & Vehicles</option>
-                        <option value="Group Games" <?= $product_category == 'Group Games' ? 'selected' : '' ?>>Group Games</option>
-                        <option value="Educational Toys" <?= $product_category == 'Educational Toys' ? 'selected' : '' ?>>Educational Toys</option>
-                        <option value="Puzzles" <?= $product_category == 'Puzzles' ? 'selected' : '' ?>>Puzzles</option>
+                        <option value="" disabled <?= empty($product_category_id) ? 'selected' : '' ?>>Select a category</option>
+                        <?php foreach($categories as $category): ?>
+                            <option value="<?= $category['category_id'] ?>" <?= $product_category_id == $category['category_id'] ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($category['name']) ?>
+                            </option>
+                        <?php endforeach; ?>
                     </select>
                 </div>
 
@@ -396,7 +429,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <div class="form-group">
                     <label><i class="fa-solid fa-boxes"></i> Stock Quantity</label>
                     <input type="number" name="product_stock" class="form-control" value="<?= htmlspecialchars($product_stock) ?>" placeholder="0">
-                    <small style="color: var(--secondary-text);">Leave empty if unlimited</small>
+                    <small style="color: var(--secondary-text);">Leave 0 for out of stock</small>
                 </div>
 
                 <!-- Product Description -->
@@ -490,6 +523,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         const name = document.querySelector('input[name="product_name"]').value.trim();
         const price = document.querySelector('input[name="product_price"]').value;
         const category = document.querySelector('select[name="product_category"]').value;
+        const salePrice = document.querySelector('input[name="product_sale_price"]').value;
 
         if (!name) {
             e.preventDefault();
@@ -506,18 +540,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             alert('Please select a category');
             return false;
         }
+        if (salePrice && parseFloat(salePrice) >= parseFloat(price)) {
+            e.preventDefault();
+            alert('Sale price must be less than original price');
+            return false;
+        }
     });
-
-    // Search bar effect
-    const searchInput = document.getElementById('searchInput');
-    if (searchInput) {
-        searchInput.addEventListener('focus', function() {
-            this.style.transform = 'translateY(-2px)';
-        });
-        searchInput.addEventListener('blur', function() {
-            this.style.transform = 'translateY(0)';
-        });
-    }
 </script>
 
 <script>

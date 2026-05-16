@@ -1,16 +1,77 @@
 <?php
 // edit-item.php
 session_start();
+require_once 'db.php';
 
-// تضمين المصفوفات الحالية
-require_once 'items-array.php';
+$pdo = getDB();
 
 // الحصول على ID العنصر من URL
 $itemId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+$itemType = isset($_GET['type']) ? $_GET['type'] : '';
 
-// دمج جميع العناصر في مصفوفة واحدة
-$allItems = array_merge($clothesItems, $teddyColors);
-$item = isset($allItems[$itemId]) ? $allItems[$itemId] : null;
+// إذا لم يتم تحديد النوع، نحاول اكتشافه من قاعدة البيانات
+if (empty($itemType)) {
+    // البحث في جدول clothing_items أولاً
+    $stmt = $pdo->prepare("SELECT 'clothing' as source, type FROM clothing_items WHERE item_id = ?");
+    $stmt->execute([$itemId]);
+    $result = $stmt->fetch();
+
+    if ($result) {
+        $itemType = $result['type'];
+        $source = 'clothing';
+    } else {
+        // البحث في جدول teddy_colors
+        $stmt = $pdo->prepare("SELECT 'color' as source FROM teddy_colors WHERE color_id = ?");
+        $stmt->execute([$itemId]);
+        $result = $stmt->fetch();
+        if ($result) {
+            $itemType = 'color';
+            $source = 'color';
+        }
+    }
+}
+
+// جلب العنصر من قاعدة البيانات
+$item = null;
+$source = null;
+
+if ($itemType === 'color') {
+    $stmt = $pdo->prepare("SELECT color_id as id, name, 'color' as type, NULL as price, image FROM teddy_colors WHERE color_id = ?");
+    $stmt->execute([$itemId]);
+    $itemData = $stmt->fetch();
+    if ($itemData) {
+        $item = [
+                'id' => $itemData['id'],
+                'name' => $itemData['name'],
+                'type' => 'color',
+                'category' => 'color',
+                'price' => 0,
+                'image' => $itemData['image']
+        ];
+        $source = 'color';
+    }
+} else {
+    $stmt = $pdo->prepare("SELECT item_id as id, name, type, price, image FROM clothing_items WHERE item_id = ?");
+    $stmt->execute([$itemId]);
+    $itemData = $stmt->fetch();
+    if ($itemData) {
+        // تحويل نوع الـ type إلى القيمة الصحيحة (outfit, shoes, accessory)
+        $typeValue = $itemData['type'];
+        if (!in_array($typeValue, ['outfit', 'shoes', 'accessory'])) {
+            $typeValue = 'outfit';
+        }
+
+        $item = [
+                'id' => $itemData['id'],
+                'name' => $itemData['name'],
+                'type' => $typeValue,
+                'category' => $typeValue,
+                'price' => (float)$itemData['price'],
+                'image' => $itemData['image']
+        ];
+        $source = 'clothing';
+    }
+}
 
 // إذا لم يتم العثور على العنصر، الرجوع إلى الصفحة السابقة
 if (!$item) {
@@ -20,87 +81,49 @@ if (!$item) {
 
 // متغيرات النموذج مع بيانات العنصر الحالي
 $item_name = $item['name'];
-$item_category = $item['category'];
 $item_type = $item['type'];
 $item_price = $item['price'];
-$item_image = $item['image'];
 $errors = [];
 $success = false;
 
-// معالجة إرسال النموذج
+// معالجة إرسال النموذج (تحديث السعر فقط)
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $item_name = trim($_POST['item_name'] ?? '');
-    $item_category = trim($_POST['item_category'] ?? '');
-    $item_type = trim($_POST['item_type'] ?? '');
     $item_price = trim($_POST['item_price'] ?? '');
 
-    // التحقق من صحة البيانات
-    if (empty($item_name)) {
-        $errors[] = 'Item name is required';
-    }
-
-    if (empty($item_category)) {
-        $errors[] = 'Category is required';
-    }
-
-    if (empty($item_type)) {
-        $errors[] = 'Item type is required';
-    }
-
+    // التحقق من صحة السعر
     if (empty($item_price) && $item_type !== 'color') {
         $errors[] = 'Price is required';
     } elseif (!empty($item_price) && (!is_numeric($item_price) || $item_price < 0)) {
         $errors[] = 'Price must be a positive number';
     }
 
-    // معالجة رفع الصورة الجديدة (إذا تم اختيارها)
-    $image_path = $item_image; // الاحتفاظ بالصورة القديمة افتراضياً
-
-    if ($item_type !== 'color') {
-        if (isset($_FILES['item_image']) && $_FILES['item_image']['error'] === UPLOAD_ERR_OK) {
-            $file = $_FILES['item_image'];
-            $allowed_types = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
-            $max_size = 2 * 1024 * 1024; // 2MB
-
-            if (!in_array($file['type'], $allowed_types)) {
-                $errors[] = 'Only JPG, PNG, and WEBP images are allowed';
-            } elseif ($file['size'] > $max_size) {
-                $errors[] = 'Image size must be less than 2MB';
-            } else {
-                // إنشاء اسم فريد للصورة
-                $extension = pathinfo($file['name'], PATHINFO_EXTENSION);
-                $new_filename = strtolower(str_replace(' ', '_', $item_name)) . '_' . time() . '.' . $extension;
-                $upload_path = 'images/' . $new_filename;
-
-                // التأكد من وجود المجلد
-                if (!is_dir('images')) {
-                    mkdir('images', 0777, true);
-                }
-
-                if (move_uploaded_file($file['tmp_name'], $upload_path)) {
-                    $image_path = $new_filename;
-                } else {
-                    $errors[] = 'Failed to upload image';
-                }
-            }
-        }
-    }
-
-    // إذا لم يكن هناك أخطاء
+    // إذا لم يكن هناك أخطاء، قم بتحديث السعر في قاعدة البيانات
     if (empty($errors)) {
-        // هنا يتم تحديث العنصر في قاعدة البيانات أو ملف JSON
-        // للتجربة، نعرض رسالة نجاح
+        try {
+            $pdo->beginTransaction();
 
-        // تحديث بيانات العنصر في المصفوفة المؤقتة للعرض
-        $item['name'] = $item_name;
-        $item['category'] = $item_category;
-        $item['type'] = $item_type;
-        $item['price'] = (float)$item_price;
-        if ($image_path !== $item_image && $item_type !== 'color') {
-            $item['image'] = $image_path;
+            if ($item_type === 'color') {
+                // الألوان ليس لها سعر، يتم تخطي التحديث أو إظهار رسالة
+                $success = true;
+            } else {
+                // تحديث السعر فقط في جدول clothing_items
+                $stmt = $pdo->prepare("
+                    UPDATE clothing_items 
+                    SET price = ? 
+                    WHERE item_id = ?
+                ");
+                $stmt->execute([$item_price, $itemId]);
+                $pdo->commit();
+                $success = true;
+
+                // تحديث المتغير للعرض
+                $item_price = $item_price;
+            }
+
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            $errors[] = 'Database error: ' . $e->getMessage();
         }
-
-        $success = true;
     }
 }
 ?>
@@ -131,7 +154,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             padding: 35px;
             box-shadow: 0 4px 15px var(--shadow);
             animation: fadeInUp 0.6s ease;
-            max-width: 700px;
+            max-width: 600px;
             margin: 0 auto;
         }
 
@@ -150,6 +173,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             gap: 10px;
         }
         .form-header p {
+            color: var(--secondary-text);
+        }
+
+        .info-card {
+            background: var(--bg-color);
+            border-radius: 20px;
+            padding: 20px;
+            margin-bottom: 25px;
+            text-align: center;
+        }
+        .info-card .item-name {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--text-color);
+            margin-bottom: 10px;
+        }
+        .info-card .item-type {
+            display: inline-block;
+            background: var(--pink);
+            padding: 5px 20px;
+            border-radius: 30px;
+            font-size: 14px;
+            font-weight: 600;
+            color: #000;
+        }
+        .info-card .item-id {
+            margin-top: 15px;
+            font-size: 13px;
             color: var(--secondary-text);
         }
 
@@ -186,48 +237,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border-color: var(--pink);
             box-shadow: 0 0 0 3px rgba(248, 187, 208, 0.3);
         }
-        select.form-control {
-            cursor: pointer;
-        }
 
-        /* Image Upload */
-        .image-upload-area {
-            border: 2px dashed var(--secondary-text);
-            border-radius: 20px;
-            padding: 30px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            background: var(--bg-color);
-        }
-        .image-upload-area:hover {
-            border-color: var(--pink);
-            background: rgba(248, 187, 208, 0.05);
-        }
-        .image-upload-area i {
-            font-size: 48px;
-            color: var(--primary);
-            margin-bottom: 15px;
-        }
-        .image-upload-area p {
+        .form-control:disabled {
+            background: var(--card-bg);
             color: var(--secondary-text);
-            margin: 0;
-        }
-        .image-upload-area .small-text {
-            font-size: 12px;
-            margin-top: 8px;
-        }
-        .image-preview {
-            margin-top: 15px;
-            display: flex;
-            justify-content: center;
-        }
-        .image-preview img {
-            max-width: 120px;
-            max-height: 120px;
-            border-radius: 12px;
-            object-fit: cover;
-            border: 2px solid var(--pink);
+            opacity: 0.7;
+            cursor: not-allowed;
         }
 
         .alert {
@@ -289,26 +304,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: #ff6b6b;
         }
 
-        /* Current image display */
-        .current-image {
-            text-align: center;
-            margin-bottom: 20px;
-            padding: 15px;
-            background: var(--bg-color);
-            border-radius: 16px;
-        }
-        .current-image p {
-            font-size: 13px;
-            color: var(--secondary-text);
-            margin-bottom: 10px;
-        }
-        .current-image img {
-            max-width: 100px;
-            max-height: 100px;
-            border-radius: 12px;
-            object-fit: cover;
-        }
-
         @keyframes fadeInUp {
             from { opacity: 0; transform: translateY(20px); }
             to { opacity: 1; transform: translateY(0); }
@@ -330,16 +325,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="form-container">
             <div class="form-header">
                 <h1>
-                    <i class="fa-solid fa-pen-to-square" style="color: var(--primary);"></i>
-                    Edit Item
+                    <i class="fa-solid fa-dollar-sign" style="color: var(--primary);"></i>
+                    Edit Item Price
                 </h1>
-                <p>Update outfit, shoes, accessory, or color information</p>
+                <p>Update the price of the selected item</p>
             </div>
 
             <?php if ($success): ?>
                 <div class="alert alert-success">
                     <i class="fa-solid fa-check-circle"></i>
-                    <span>Item updated successfully! <a href="custom-teddies.php" style="color: #4CAF50;">Back to Custom Teddies</a></span>
+                    <span>Price updated successfully! <a href="custom-teddies.php" style="color: #4CAF50;">Back to Custom Teddies</a></span>
                 </div>
             <?php endif; ?>
 
@@ -354,57 +349,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </div>
             <?php endif; ?>
 
-            <form action="edit-item.php?id=<?= $itemId ?>" method="POST"  id="itemForm">
-                <!-- Item Type -->
-                <div class="form-group">
-                    <label><i class="fa-solid fa-tag"></i> Item Type <span class="required">*</span></label>
-                    <select name="item_type" id="itemType" class="form-control" required>
-                        <option value="">Select item type</option>
-                        <option value="outfit" <?= $item_type == 'outfit' ? 'selected' : '' ?>>Outfit (Clothing)</option>
-                        <option value="shoes" <?= $item_type == 'shoes' ? 'selected' : '' ?>>Shoes</option>
-                        <option value="accessory" <?= $item_type == 'accessory' ? 'selected' : '' ?>>Accessory</option>
-                        <option value="color" <?= $item_type == 'color' ? 'selected' : '' ?>>Color</option>
-                    </select>
+            <form action="edit-item.php?id=<?= $itemId ?>&type=<?= $item_type ?>" method="POST" id="itemForm">
+
+                <!-- Item Information Card (Read Only) -->
+                <div class="info-card">
+                    <div class="item-name"><?= htmlspecialchars($item_name) ?></div>
+                    <div class="item-type">
+                        <i class="fa-solid fa-<?= $item_type == 'outfit' ? 'shirt' : ($item_type == 'shoes' ? 'shoe-prints' : ($item_type == 'accessory' ? 'gem' : 'palette')) ?>"></i>
+                        <?= ucfirst($item_type) ?>
+                    </div>
+                    <div class="item-id">
+                        <i class="fa-regular fa-id-card"></i> Item ID: #<?= $itemId ?>
+                    </div>
                 </div>
 
-
-
-                <!-- Item Name -->
-                <div class="form-group">
-                    <label><i class="fa-solid fa-font"></i> Item Name <span class="required">*</span></label>
-                    <input type="text" name="item_name" class="form-control" value="<?= htmlspecialchars($item_name) ?>" placeholder="e.g., Blue Dress, Winter Boots..." required>
-                </div>
-
-                <!-- Price -->
+                <!-- Price (Editable) -->
                 <div class="form-group" id="priceGroup">
-                    <label><i class="fa-solid fa-dollar-sign"></i> Price <span class="required" id="priceRequired">*</span></label>
-                    <input type="number" step="0.01" name="item_price" class="form-control" value="<?= htmlspecialchars($item_price) ?>" placeholder="0.00">
-                </div>
-
-                <!-- Current Image Display -->
-                <?php if ($item_type !== 'color' && !empty($item_image)): ?>
-                    <div class="current-image">
-                        <p><i class="fa-solid fa-image"></i> Current Image</p>
-                        <img src="images/<?= htmlspecialchars($item_image) ?>" alt="<?= htmlspecialchars($item_name) ?>">
-                    </div>
-                <?php endif; ?>
-
-                <!-- Image Upload -->
-                <div class="form-group" id="imageGroup">
-                    <label><i class="fa-solid fa-image"></i> New Image (Optional)</label>
-                    <div class="image-upload-area" id="imageUploadArea">
-                        <i class="fa-solid fa-cloud-upload-alt"></i>
-                        <p>Click to upload new image</p>
-                        <p class="small-text">PNG, JPG, WEBP (Max 2MB)</p>
-                        <input type="file" name="item_image" id="itemImage" accept="image/*" style="display: none;">
-                    </div>
-                    <div class="image-preview" id="imagePreview"></div>
+                    <label><i class="fa-solid fa-dollar-sign"></i> Price <span class="required">*</span></label>
+                    <input type="number" step="0.01" name="item_price" class="form-control" value="<?= htmlspecialchars($item_price) ?>" placeholder="0.00" required>
                 </div>
 
                 <!-- Form Buttons -->
                 <div class="form-buttons">
                     <button type="submit" class="btn-submit">
-                        <i class="fa-solid fa-save"></i> Update Item
+                        <i class="fa-solid fa-save"></i> Update Price
                     </button>
                     <a href="custom-teddies.php" class="btn-cancel">
                         <i class="fa-solid fa-times"></i> Cancel
@@ -416,123 +384,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </div>
 
 <script>
-    // Dynamic form based on item type
-    const itemTypeSelect = document.getElementById('itemType');
-    const categoryGroup = document.getElementById('categoryGroup');
-    const priceGroup = document.getElementById('priceGroup');
-    const imageGroup = document.getElementById('imageGroup');
-    const priceRequired = document.getElementById('priceRequired');
-    const categorySelect = document.getElementById('itemCategory');
-
-    function updateFormFields() {
-        const selectedType = itemTypeSelect.value;
-
-        if (selectedType === 'color') {
-            // For colors: hide price and image
-            priceGroup.style.display = 'none';
-            imageGroup.style.display = 'none';
-            priceRequired.style.display = 'none';
-
-            // Update category options for colors
-            categorySelect.innerHTML = '<option value="">Select category</option><option value="color">Color</option>';
-            categorySelect.value = '<?= $item_category ?>';
-        } else {
-            // For outfit, shoes, accessory: show price and image
-            priceGroup.style.display = 'block';
-            imageGroup.style.display = 'block';
-            priceRequired.style.display = 'inline';
-
-            // Update category based on type
-            if (selectedType === 'outfit') {
-                categorySelect.innerHTML = '<option value="outfit">Outfit</option>';
-            } else if (selectedType === 'shoes') {
-                categorySelect.innerHTML = '<option value="shoes">Shoes</option>';
-            } else if (selectedType === 'accessory') {
-                categorySelect.innerHTML = '<option value="accessory">Accessory</option>';
-            }
-            categorySelect.value = '<?= $item_category ?>';
-        }
-    }
-
-    itemTypeSelect.addEventListener('change', updateFormFields);
-
-    // Image Upload Preview
-    const uploadArea = document.getElementById('imageUploadArea');
-    const imageInput = document.getElementById('itemImage');
-    const imagePreview = document.getElementById('imagePreview');
-
-    uploadArea.addEventListener('click', function() {
-        imageInput.click();
-    });
-
-    imageInput.addEventListener('change', function(e) {
-        const file = e.target.files[0];
-        if (file) {
-            const reader = new FileReader();
-            reader.onload = function(event) {
-                imagePreview.innerHTML = `<img src="${event.target.result}" alt="Preview">`;
-                uploadArea.style.borderColor = 'var(--pink)';
-            };
-            reader.readAsDataURL(file);
-        } else {
-            imagePreview.innerHTML = '';
-            uploadArea.style.borderColor = '';
-        }
-    });
-
-    // Drag and drop
-    uploadArea.addEventListener('dragover', function(e) {
-        e.preventDefault();
-        uploadArea.style.borderColor = 'var(--primary)';
-        uploadArea.style.background = 'rgba(248, 187, 208, 0.1)';
-    });
-
-    uploadArea.addEventListener('dragleave', function(e) {
-        e.preventDefault();
-        uploadArea.style.borderColor = '';
-        uploadArea.style.background = '';
-    });
-
-    uploadArea.addEventListener('drop', function(e) {
-        e.preventDefault();
-        uploadArea.style.borderColor = '';
-        uploadArea.style.background = '';
-
-        const file = e.dataTransfer.files[0];
-        if (file && file.type.startsWith('image/')) {
-            imageInput.files = e.dataTransfer.files;
-            const reader = new FileReader();
-            reader.onload = function(event) {
-                imagePreview.innerHTML = `<img src="${event.target.result}" alt="Preview">`;
-            };
-            reader.readAsDataURL(file);
-        }
-    });
-
     // Form validation
-    document.getElementById('itemForm').addEventListener('submit', function(e) {
-        const type = document.getElementById('itemType').value;
-        const name = document.querySelector('input[name="item_name"]').value.trim();
-        const price = document.querySelector('input[name="item_price"]').value;
+    const itemForm = document.getElementById('itemForm');
+    if (itemForm) {
+        itemForm.addEventListener('submit', function(e) {
+            const price = document.querySelector('input[name="item_price"]')?.value;
 
-        if (!type) {
-            e.preventDefault();
-            alert('Please select item type');
-            return false;
-        }
-        if (!name) {
-            e.preventDefault();
-            alert('Please enter item name');
-            return false;
-        }
-        if (type !== 'color') {
             if (!price || price <= 0) {
                 e.preventDefault();
                 alert('Please enter a valid price');
                 return false;
             }
-        }
-    });
+        });
+    }
 
     // Focus effects
     const inputs = document.querySelectorAll('.form-control');

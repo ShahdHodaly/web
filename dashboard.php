@@ -1,25 +1,36 @@
 <?php
 // dashboard.php
 session_start();
+require_once 'db.php';
 
-// تضمين المصفوفات
-require_once 'products.php';
-require_once 'orders-array.php';
-require_once 'users-array.php';
-require_once 'reviews-array.php';
+$pdo = getDB();
 
-// حساب الإحصائيات
-$totalProducts = count($products);
-$totalOrders = count($orders);
-$totalUsers = count($users);
-$totalRevenue = array_sum(array_column($orders, 'total'));
+// --- حساب الإحصائيات من قاعدة البيانات ---
 
-// حساب الطلبات الشهرية (آخر 6 أشهر)
+// 1. إجمالي المنتجات
+$stmt = $pdo->query("SELECT COUNT(*) FROM products");
+$totalProducts = $stmt->fetchColumn();
+
+// 2. إجمالي الطلبات
+$stmt = $pdo->query("SELECT COUNT(*) FROM orders");
+$totalOrders = $stmt->fetchColumn();
+
+// 3. إجمالي المستخدمين
+$stmt = $pdo->query("SELECT COUNT(*) FROM users WHERE role = 'Customer'"); // حسب الكود حقك، في Admin و Customer
+$totalUsers = $stmt->fetchColumn();
+
+// 4. إجمالي الإيرادات (مجموع عمود total من جدول orders)
+$stmt = $pdo->query("SELECT COALESCE(SUM(total), 0) FROM orders WHERE status != 'cancelled'"); // استبعاد الملغاة اذا حبيت
+$totalRevenue = $stmt->fetchColumn();
+
+// --- حساب الطلبات الشهرية (آخر 6 أشهر) ---
 $months = [];
 $monthlyOrders = [];
 $currentMonth = date('n');
 $currentYear = date('Y');
 
+// جلب عدد الطلبات لكل شهر من قاعدة البيانات دفعة واحدة
+$monthlyData = [];
 for ($i = 5; $i >= 0; $i--) {
     $monthNum = $currentMonth - $i;
     $year = $currentYear;
@@ -30,67 +41,57 @@ for ($i = 5; $i >= 0; $i--) {
     $monthName = date('M', mktime(0, 0, 0, $monthNum, 1));
     $months[] = $monthName;
 
-    $count = 0;
-    foreach ($orders as $order) {
-        $orderDate = strtotime($order['date']);
-        if (date('n', $orderDate) == $monthNum && date('Y', $orderDate) == $year) {
-            $count++;
-        }
-    }
+    // استعلام لجلب عدد الطلبات لشهر وسنة محددين
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*) 
+        FROM orders 
+        WHERE EXTRACT(MONTH FROM created_at) = ? AND EXTRACT(YEAR FROM created_at) = ?
+    ");
+    $stmt->execute([$monthNum, $year]);
+    $count = $stmt->fetchColumn();
     $monthlyOrders[] = $count;
 }
 $maxMonthlyOrders = max($monthlyOrders) ?: 1;
 
-// حساب أفضل منتج مبيعاً من الأوردرات
-$productSales = [];
-foreach ($orders as $order) {
-    if (isset($order['products'])) {
-        foreach ($order['products'] as $product) {
-            $productName = $product['name'];
-            $quantity = $product['quantity'];
-            if (!isset($productSales[$productName])) {
-                $productSales[$productName] = 0;
-            }
-            $productSales[$productName] += $quantity;
-        }
-    }
-}
+// --- حساب أفضل منتج مبيعاً ---
+$stmt = $pdo->query("
+    SELECT p.product_id, p.name, p.image, SUM(oi.quantity) as total_sold
+    FROM order_items oi
+    JOIN products p ON oi.product_id = p.product_id
+    GROUP BY p.product_id, p.name, p.image
+    ORDER BY total_sold DESC
+    LIMIT 1
+");
+$topProductData = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// ترتيب المبيعات تنازلياً
-arsort($productSales);
-$topProduct = key($productSales);
-$topProductSales = current($productSales);
-
-// العثور على صورة المنتج الأكثر مبيعاً
-$topProductImage = '';
-foreach ($orders as $order) {
-    if (isset($order['products'])) {
-        foreach ($order['products'] as $product) {
-            if ($product['name'] == $topProduct) {
-                $topProductImage = $product['image'];
-                break 2;
-            }
-        }
-    }
-}
-if (!$topProductImage) {
+$topProduct = $topProductData ? $topProductData['name'] : 'No products sold yet';
+$topProductSales = $topProductData ? $topProductData['total_sold'] : 0;
+$topProductImage = $topProductData ? $topProductData['image'] : 'barbie5.png';
+if (!$topProductImage || $topProductImage == '') {
     $topProductImage = 'barbie5.png';
 }
 
-// آخر 3 طلبات
-$ordersByDate = $orders;
-uasort($ordersByDate, function($a, $b) {
-    return strtotime($b['date']) - strtotime($a['date']);
-});
-$recentOrders = array_slice($ordersByDate, 0, 3, true);
+// --- آخر 3 طلبات ---
+$stmt = $pdo->query("
+    SELECT order_id, order_number, created_at, total, 
+           (SELECT COUNT(*) FROM order_items WHERE order_id = orders.order_id) as items_count
+    FROM orders
+    ORDER BY created_at DESC
+    LIMIT 3
+");
+$recentOrders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-
-// آخر 3 مراجعات
-$reviewsByDate = $reviews;
-uasort($reviewsByDate, function($a, $b) {
-    return strtotime($b['date']) - strtotime($a['date']);
-});
-$recentReviews = array_slice($reviewsByDate, 0, 3, true);
+// --- آخر 3 مراجعات معتمدة ---
+$stmt = $pdo->query("
+    SELECT r.comment, r.rating, r.created_at, u.name as customer_name, p.name as product_name
+    FROM reviews r
+    JOIN users u ON r.user_id = u.user_id
+    JOIN products p ON r.product_id = p.product_id
+    WHERE r.status = 'approved'
+    ORDER BY r.created_at DESC
+    LIMIT 3
+");
+$recentReviews = $stmt->fetchAll(PDO::FETCH_ASSOC);
 ?>
 
 <!DOCTYPE html>
@@ -106,6 +107,7 @@ $recentReviews = array_slice($reviewsByDate, 0, 3, true);
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="admin.css">
     <style>
+        /* تم نقل جميع الأنماط الخاصة بالداشبورد هنا كما هي في كودك الأصلي */
         body { background-color: var(--bg-color); margin: 0; font-family: 'Poppins', sans-serif; overflow-x: hidden; }
         .admin-wrapper { display: flex; min-height: 100vh; }
 
@@ -529,28 +531,7 @@ $recentReviews = array_slice($reviewsByDate, 0, 3, true);
                 </form>
             </div>
 
-            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
-                <a href="add-product.php" class="quick-action-btn">
-                    <div style="background: var(--primary); width: 38px; height: 38px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white;">
-                        <i class="fa-solid fa-plus"></i>
-                    </div>
-                    <div>
-                        <div style="font-weight: 600; color: var(--text-color);">Add Product</div>
-                        <div style="font-size: 12px; color: var(--secondary-text);">New item</div>
-                    </div>
-                </a>
 
-                <a href="add-coupon.php" class="quick-action-btn">
-                    <div style="background: var(--lavender); width: 38px; height: 38px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white;">
-                        <i class="fa-solid fa-tag"></i>
-                    </div>
-                    <div>
-                        <div style="font-weight: 600; color: var(--text-color);">Create Coupon</div>
-                        <div style="font-size: 12px; color: var(--secondary-text);">Discount code</div>
-                    </div>
-                </a>
-
-            </div>
         </div>
 
         <!-- statistics cards -->
@@ -612,7 +593,7 @@ $recentReviews = array_slice($reviewsByDate, 0, 3, true);
                             <i class="fa-solid fa-trophy" style="font-size: 32px; color: #FFD700;"></i>
                             <span style="position: absolute; top: -8px; right: -8px; background: #FFD700; color: black; font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 50%;">1</span>
                         </div>
-                        <img src="images/<?= $topProductImage ?>" class="game-img" onerror="this.src='images/barbie5.png'">
+                        <img src="<?= htmlspecialchars($topProductImage) ?>" class="game-img" onerror="this.src='images/barbie5.png'">
                         <div style="flex: 1;">
                             <strong style="font-size: 18px;"><?= htmlspecialchars($topProduct) ?></strong>
                             <div style="display: flex; align-items: center; gap: 10px; margin-top: 4px;">
@@ -632,33 +613,41 @@ $recentReviews = array_slice($reviewsByDate, 0, 3, true);
         <div class="activity-row">
             <div class="activity-card">
                 <div class="chart-title"><i class="fa-regular fa-clock"></i> Latest Orders</div>
-                <?php foreach($recentOrders as $id => $order): ?>
-                    <div class="activity-item">
-                        <div class="activity-badge"><i class="fa-solid fa-bag-shopping"></i></div>
-                        <div class="activity-desc">
-                            <p><strong><?= $order['order_number'] ?></strong> · <?= $order['items_count'] ?> items</p>
-                            <small><?= date('M d, H:i', strtotime($order['date'])) ?> · $<?= number_format($order['total'], 2) ?></small>
+                <?php if(empty($recentOrders)): ?>
+                    <div class="activity-item">No orders found.</div>
+                <?php else: ?>
+                    <?php foreach($recentOrders as $order): ?>
+                        <div class="activity-item">
+                            <div class="activity-badge"><i class="fa-solid fa-bag-shopping"></i></div>
+                            <div class="activity-desc">
+                                <p><strong><?= htmlspecialchars($order['order_number']) ?></strong> · <?= $order['items_count'] ?> items</p>
+                                <small><?= date('M d, H:i', strtotime($order['created_at'])) ?> · $<?= number_format($order['total'], 2) ?></small>
+                            </div>
                         </div>
-                    </div>
-                <?php endforeach; ?>
+                    <?php endforeach; ?>
+                <?php endif; ?>
                 <div style="margin-top: 12px;"><a href="orders.php" style="color: var(--primary);">View all orders →</a></div>
             </div>
             <div class="activity-card">
                 <div class="chart-title"><i class="fa-regular fa-bell"></i> Latest Reviews</div>
-                <?php foreach($recentReviews as $id => $review): ?>
-                    <div class="activity-item">
-                        <div class="activity-badge"><i class="fa-regular fa-star"></i></div>
-                        <div class="activity-desc">
-                            <p><strong><?= htmlspecialchars($review['customer_name']) ?></strong> reviewed <strong><?= htmlspecialchars($review['product_name']) ?></strong></p>
-                            <div class="rating-stars">
-                                <?php for($i = 1; $i <= 5; $i++): ?>
-                                    <i class="fa-<?= $i <= $review['rating'] ? 'solid' : 'regular' ?> fa-star" style="color: #FFD700; font-size: 11px;"></i>
-                                <?php endfor; ?>
+                <?php if(empty($recentReviews)): ?>
+                    <div class="activity-item">No reviews yet.</div>
+                <?php else: ?>
+                    <?php foreach($recentReviews as $review): ?>
+                        <div class="activity-item">
+                            <div class="activity-badge"><i class="fa-regular fa-star"></i></div>
+                            <div class="activity-desc">
+                                <p><strong><?= htmlspecialchars($review['customer_name']) ?></strong> reviewed <strong><?= htmlspecialchars($review['product_name']) ?></strong></p>
+                                <div class="rating-stars">
+                                    <?php for($i = 1; $i <= 5; $i++): ?>
+                                        <i class="fa-<?= $i <= $review['rating'] ? 'solid' : 'regular' ?> fa-star" style="color: #FFD700; font-size: 11px;"></i>
+                                    <?php endfor; ?>
+                                </div>
+                                <small>"<?= htmlspecialchars(substr($review['comment'], 0, 50)) ?>..."</small>
                             </div>
-                            <small>"<?= htmlspecialchars(substr($review['comment'], 0, 50)) ?>..."</small>
                         </div>
-                    </div>
-                <?php endforeach; ?>
+                    <?php endforeach; ?>
+                <?php endif; ?>
                 <div style="margin-top: 8px;"><a href="reviews.php" style="color: var(--primary);">View all reviews →</a></div>
             </div>
         </div>

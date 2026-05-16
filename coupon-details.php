@@ -2,21 +2,28 @@
 // coupon-details.php
 session_start();
 
-// تضمين مصفوفة الكوبونات
-require_once 'coupons-array.php';
-
+// الاتصال بقاعدة البيانات
+require_once 'db.php';
+$pdo = getDB();
 // الحصول على ID الكوبون من الرابط
 $coupon_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
-// التحقق من وجود الكوبون
-if (!isset($coupons[$coupon_id])) {
-    $_SESSION['error'] = 'Coupon not found';
+// التحقق من وجود الكوبون في الداتا بيز
+$stmt = $pdo->prepare("SELECT * FROM Coupons WHERE coupon_id = ?");
+$stmt->execute([$coupon_id]);
+$coupon = $stmt->fetch(PDO::FETCH_ASSOC);
+
+// إذا الكوبون غير موجود، ارجعه لصفحة الكوبونات
+if (!$coupon) {
     header("Location: coupons.php");
     exit;
 }
 
-$coupon = $coupons[$coupon_id];
 $pageTitle = $coupon['code'] . " | Teddy Shop";
+
+// إضافة القيم الافتراضية للمفاتيح غير الموجودة في الداتا بيز لمنع أخطاء الـ HTML
+$coupon['applicable_products'] = 'all';
+$coupon['applicable_categories'] = 'all';
 ?>
 
 <!DOCTYPE html>

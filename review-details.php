@@ -1,22 +1,85 @@
 <?php
 // review-details.php
 session_start();
+require_once 'db.php';
 
-// تضمين مصفوفة المراجعات
-require_once 'reviews-array.php';
+$pdo = getDB();
 
 // الحصول على ID المراجعة من الرابط
 $review_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
+// جلب المراجعة من قاعدة البيانات مع معلومات المستخدم والمنتج
+$stmt = $pdo->prepare("
+    SELECT 
+        r.review_id,
+        r.rating,
+        r.comment,
+        r.status::text as status,
+        r.helpful_count,
+        r.created_at,
+        u.user_id,
+        u.name as customer_name,
+        u.email as customer_email,
+        u.avatar as customer_avatar,
+        p.product_id,
+        p.name as product_name,
+        p.image as product_image
+    FROM reviews r
+    JOIN users u ON r.user_id = u.user_id
+    JOIN products p ON r.product_id = p.product_id
+    WHERE r.review_id = ?
+");
+$stmt->execute([$review_id]);
+$reviewData = $stmt->fetch(PDO::FETCH_ASSOC);
+
 // التحقق من وجود المراجعة
-if (!isset($reviews[$review_id])) {
+if (!$reviewData) {
     $_SESSION['error'] = 'Review not found';
     header("Location: reviews.php");
     exit;
 }
 
-$review = $reviews[$review_id];
+// تنسيق بيانات المراجعة
+$review = [
+        'id' => $reviewData['review_id'],
+        'product_name' => $reviewData['product_name'],
+        'product_image' => $reviewData['product_image'] ?: 'placeholder.png',
+        'customer_name' => $reviewData['customer_name'],
+        'customer_avatar' => $reviewData['customer_avatar'] ?: 'https://ui-avatars.com/api/?name=' . urlencode($reviewData['customer_name']) . '&background=F8BBD0&color=000&size=70',
+        'rating' => (int)$reviewData['rating'],
+        'comment' => $reviewData['comment'],
+        'date' => $reviewData['created_at'],
+        'status' => $reviewData['status'],
+        'helpful_count' => (int)$reviewData['helpful_count']
+];
+
 $pageTitle = "Review by " . $review['customer_name'] . " | Teddy Shop";
+
+// معالجة تغيير حالة المراجعة (Approve/Reject)
+$success_message = '';
+$error_message = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    if ($_POST['action'] === 'approve') {
+        try {
+            $stmt = $pdo->prepare("UPDATE reviews SET status = 'approved'::review_status WHERE review_id = ?");
+            $stmt->execute([$review_id]);
+            $review['status'] = 'approved';
+            $success_message = 'Review approved successfully!';
+        } catch (PDOException $e) {
+            $error_message = 'Database error: ' . $e->getMessage();
+        }
+    } elseif ($_POST['action'] === 'reject') {
+        try {
+            $stmt = $pdo->prepare("UPDATE reviews SET status = 'rejected'::review_status WHERE review_id = ?");
+            $stmt->execute([$review_id]);
+            $review['status'] = 'rejected';
+            $success_message = 'Review rejected successfully!';
+        } catch (PDOException $e) {
+            $error_message = 'Database error: ' . $e->getMessage();
+        }
+    }
+}
 ?>
 
 <!DOCTYPE html>
@@ -45,7 +108,7 @@ $pageTitle = "Review by " . $review['customer_name'] . " | Teddy Shop";
             padding: 35px;
             box-shadow: 0 4px 15px var(--shadow);
             animation: fadeInUp 0.6s ease;
-            max-width: 900px;
+            max-width: 800px;
             margin: 0 auto;
         }
 
@@ -76,6 +139,7 @@ $pageTitle = "Review by " . $review['customer_name'] . " | Teddy Shop";
         }
         .status-approved { background: rgba(76, 175, 80, 0.2); color: #4CAF50; }
         .status-pending { background: rgba(255, 152, 0, 0.2); color: #FF9800; }
+        .status-rejected { background: rgba(244, 67, 54, 0.2); color: #F44336; }
 
         /* Product Info */
         .product-section {
@@ -168,78 +232,25 @@ $pageTitle = "Review by " . $review['customer_name'] . " | Teddy Shop";
             border-left: 4px solid var(--pink);
         }
 
-        /* Review Stats */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 20px;
+        /* Alert Messages */
+        .alert {
+            padding: 12px 18px;
+            border-radius: 16px;
             margin-bottom: 25px;
-        }
-        .stat-card {
-            background: var(--bg-color);
-            border-radius: 20px;
-            padding: 20px;
-            text-align: center;
-        }
-        .stat-card i {
-            font-size: 32px;
-            color: var(--primary);
-            margin-bottom: 10px;
-        }
-        .stat-card .stat-value {
-            font-size: 24px;
-            font-weight: 700;
-            color: var(--text-color);
-        }
-        .stat-card .stat-label {
-            font-size: 13px;
-            color: var(--secondary-text);
-        }
-
-        /* Admin Reply */
-        .reply-section {
-            background: var(--bg-color);
-            border-radius: 20px;
-            padding: 20px;
-            margin-bottom: 25px;
-        }
-        .reply-section h4 {
-            font-size: 16px;
-            font-weight: 600;
-            margin-bottom: 15px;
             display: flex;
             align-items: center;
-            gap: 8px;
-            color: var(--text-color);
+            gap: 12px;
+            animation: slideDown 0.3s ease;
         }
-        .reply-box {
-            background: var(--card-bg);
-            border-radius: 16px;
-            padding: 15px;
-            border-left: 3px solid var(--primary);
+        .alert-success {
+            background: rgba(76, 175, 80, 0.2);
+            color: #4CAF50;
+            border: 1px solid #4CAF50;
         }
-        .reply-text {
-            margin: 0 0 10px 0;
-            color: var(--text-color);
-        }
-        .reply-date {
-            font-size: 11px;
-            color: var(--secondary-text);
-        }
-        .reply-form textarea {
-            width: 100%;
-            padding: 12px;
-            background: var(--card-bg);
-            border: 2px solid transparent;
-            border-radius: 16px;
-            color: var(--text-color);
-            font-size: 14px;
-            resize: vertical;
-            margin-bottom: 10px;
-            outline: none;
-        }
-        .reply-form textarea:focus {
-            border-color: var(--pink);
+        .alert-error {
+            background: rgba(244, 67, 54, 0.2);
+            color: #F44336;
+            border: 1px solid #F44336;
         }
 
         /* Action Buttons */
@@ -277,14 +288,6 @@ $pageTitle = "Review by " . $review['customer_name'] . " | Teddy Shop";
             background: #ff4757;
             transform: translateY(-2px);
         }
-        .btn-reply {
-            background: var(--primary);
-            color: white;
-        }
-        .btn-reply:hover {
-            background: var(--pink);
-            transform: translateY(-2px);
-        }
         .btn-back {
             background: var(--card-bg);
             color: var(--secondary-text);
@@ -299,13 +302,16 @@ $pageTitle = "Review by " . $review['customer_name'] . " | Teddy Shop";
             from { opacity: 0; transform: translateY(20px); }
             to { opacity: 1; transform: translateY(0); }
         }
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
 
         @media (max-width: 800px) {
             .admin-sidebar { width: 100%; height: auto; }
             .admin-main { width: 100%; }
             .action-buttons { flex-direction: column; }
             .btn-action { width: 100%; justify-content: center; }
-            .stats-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -322,14 +328,29 @@ $pageTitle = "Review by " . $review['customer_name'] . " | Teddy Shop";
                     <p><i class="fa-regular fa-calendar"></i> <?= date('F d, Y \a\t h:i A', strtotime($review['date'])) ?></p>
                 </div>
                 <div class="review-status status-<?= $review['status'] ?>">
-                    <i class="fa-solid fa-<?= $review['status'] == 'approved' ? 'check-circle' : 'clock' ?>"></i>
+                    <i class="fa-solid fa-<?= $review['status'] == 'approved' ? 'check-circle' : ($review['status'] == 'pending' ? 'clock' : 'times-circle') ?>"></i>
                     <?= ucfirst($review['status']) ?>
                 </div>
             </div>
 
+            <!-- Success/Error Messages -->
+            <?php if ($success_message): ?>
+                <div class="alert alert-success">
+                    <i class="fa-solid fa-check-circle"></i>
+                    <span><?= htmlspecialchars($success_message) ?> <a href="reviews.php" style="color: #4CAF50;">Back to Reviews</a></span>
+                </div>
+            <?php endif; ?>
+
+            <?php if ($error_message): ?>
+                <div class="alert alert-error">
+                    <i class="fa-solid fa-exclamation-triangle"></i>
+                    <span><?= htmlspecialchars($error_message) ?></span>
+                </div>
+            <?php endif; ?>
+
             <!-- Product Information -->
             <div class="product-section">
-                <img src="images/<?= $review['product_image'] ?>" class="product-image" alt="<?= $review['product_name'] ?>">
+                <img src="<?= htmlspecialchars($review['product_image']) ?>" class="product-image" alt="<?= htmlspecialchars($review['product_name']) ?>" onerror="this.src='images/placeholder.png'">
                 <div class="product-details">
                     <h3><?= htmlspecialchars($review['product_name']) ?></h3>
                     <p><i class="fa-regular fa-tag"></i> Product ID: #<?= $review_id ?></p>
@@ -339,7 +360,7 @@ $pageTitle = "Review by " . $review['customer_name'] . " | Teddy Shop";
             <!-- Customer Information -->
             <div class="customer-section">
                 <div class="customer-avatar">
-                    <img src="<?= $review['customer_avatar'] ?>" alt="<?= $review['customer_name'] ?>">
+                    <img src="<?= htmlspecialchars($review['customer_avatar']) ?>" alt="<?= htmlspecialchars($review['customer_name']) ?>" onerror="this.src='images/teddy4.png'">
                 </div>
                 <div class="customer-details">
                     <h3><?= htmlspecialchars($review['customer_name']) ?></h3>
@@ -361,52 +382,21 @@ $pageTitle = "Review by " . $review['customer_name'] . " | Teddy Shop";
                 </div>
             </div>
 
-            <!-- Review Stats -->
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <i class="fa-regular fa-thumbs-up"></i>
-                    <div class="stat-value"><?= $review['helpful_count'] ?></div>
-                    <div class="stat-label">Found Helpful</div>
-                </div>
-                <div class="stat-card">
-                    <i class="fa-regular fa-clock"></i>
-                    <div class="stat-value"><?= date('M d, Y', strtotime($review['date'])) ?></div>
-                    <div class="stat-label">Review Date</div>
-                </div>
-                <div class="stat-card">
-                    <i class="fa-regular fa-star"></i>
-                    <div class="stat-value"><?= $review['rating'] ?></div>
-                    <div class="stat-label">Rating</div>
-                </div>
-            </div>
-
-            <!-- Admin Reply Section -->
-            <div class="reply-section">
-                <h4><i class="fa-solid fa-reply"></i> Admin Response</h4>
-                <?php if (isset($review['reply']) && !empty($review['reply'])): ?>
-                    <div class="reply-box">
-                        <p class="reply-text"><?= nl2br(htmlspecialchars($review['reply'])) ?></p>
-                        <p class="reply-date"><i class="fa-regular fa-calendar"></i> Replied on <?= date('M d, Y', strtotime($review['reply_date'] ?? 'now')) ?></p>
-                    </div>
-                <?php else: ?>
-                    <div class="reply-form">
-                        <textarea rows="3" placeholder="Write a response to this review..."></textarea>
-                        <button class="btn-action btn-reply" onclick="submitReply(<?= $review_id ?>)">
-                            <i class="fa-solid fa-paper-plane"></i> Send Reply
-                        </button>
-                    </div>
-                <?php endif; ?>
-            </div>
-
             <!-- Action Buttons -->
             <div class="action-buttons">
                 <?php if ($review['status'] === 'pending'): ?>
-                    <button class="btn-action btn-approve" onclick="approveReview(<?= $review_id ?>)">
-                        <i class="fa-solid fa-check-circle"></i> Approve Review
-                    </button>
-                    <button class="btn-action btn-reject" onclick="rejectReview(<?= $review_id ?>)">
-                        <i class="fa-solid fa-times-circle"></i> Reject Review
-                    </button>
+                    <form method="POST" style="display: inline;">
+                        <input type="hidden" name="action" value="approve">
+                        <button type="submit" class="btn-action btn-approve">
+                            <i class="fa-solid fa-check-circle"></i> Approve Review
+                        </button>
+                    </form>
+                    <form method="POST" style="display: inline;">
+                        <input type="hidden" name="action" value="reject">
+                        <button type="submit" class="btn-action btn-reject">
+                            <i class="fa-solid fa-times-circle"></i> Reject Review
+                        </button>
+                    </form>
                 <?php endif; ?>
                 <a href="reviews.php" class="btn-action btn-back">
                     <i class="fa-solid fa-arrow-left"></i> Back to Reviews
@@ -415,31 +405,6 @@ $pageTitle = "Review by " . $review['customer_name'] . " | Teddy Shop";
         </div>
     </main>
 </div>
-
-<script>
-    function approveReview(id) {
-        if(confirm('Approve this review? It will be visible to customers.')) {
-            alert('Review approved (Demo)');
-        }
-    }
-
-    function rejectReview(id) {
-        if(confirm('Reject this review? It will be removed from the site.')) {
-            alert('Review rejected (Demo)');
-        }
-    }
-
-    function submitReply(id) {
-        const replyText = document.querySelector('.reply-form textarea').value;
-        if(!replyText.trim()) {
-            alert('Please enter a reply message');
-            return;
-        }
-        if(confirm('Send reply to this review?')) {
-            alert('Reply sent! (Demo)');
-        }
-    }
-</script>
 
 <script>
     (function() {

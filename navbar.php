@@ -1,9 +1,56 @@
+<?php
+// navbar.php
+
+// جيبي عدد الـ cart من DB مباشرة
+$cartCount = 0;
+if (!empty($_SESSION['logged_in']) && !empty($_SESSION['user_id'])) {
+    try {
+        require_once __DIR__ . '/db.php';
+        $pdo  = getDB();
+
+        // عدد المنتجات العادية
+        $stmt = $pdo->prepare("
+            SELECT COALESCE(SUM(ci.quantity), 0)
+            FROM Cart c
+            JOIN Cart_Items ci ON c.cart_id = ci.cart_id
+            WHERE c.user_id = ?
+        ");
+        $stmt->execute([$_SESSION['user_id']]);
+        $regularCount = (int) $stmt->fetchColumn();
+
+        // عدد الدببة المخصصة (مجموع الكميات وليس عدد الصفوف)
+        try {
+            $stmt2 = $pdo->prepare("
+                SELECT COALESCE(SUM(quantity), COUNT(*)) 
+                FROM custom_teddies
+                WHERE user_id = ? AND is_saved = FALSE
+            ");
+            $stmt2->execute([$_SESSION['user_id']]);
+            $customCount = (int) $stmt2->fetchColumn();
+        } catch (Exception $e) {
+            // لو عمود quantity ما كان موجود بأي سبب، نحسب بعدد الصفوف
+            $stmt2 = $pdo->prepare("
+                SELECT COUNT(*) FROM custom_teddies
+                WHERE user_id = ? AND is_saved = FALSE
+            ");
+            $stmt2->execute([$_SESSION['user_id']]);
+            $customCount = (int) $stmt2->fetchColumn();
+        }
+
+        $cartCount = $regularCount + $customCount;
+    } catch (Exception $e) {
+        $cartCount = 0;
+    }
+}
+?>
+
+
 <!-- بداية قسم HTML (شريط التنقل) -->
 <nav class="navbar">
 
     <!-- الجزء اليسار (البروفايل وزر الدارك مود) -->
     <div class="nav-left">
-        <a href="profile.php">
+        <a href="<?= !empty($_SESSION['logged_in']) ? 'profile.php' : 'auth.php' ?>">
             <i class="fa-solid fa-user profile-icon"></i>
         </a>
 
@@ -31,7 +78,9 @@
         <li class="cart-item">
             <a href="cart.php">
                 <i class="fa-solid fa-cart-shopping"></i>
-                <span class="cart-count" id="cartCount">0</span>
+                <span class="cart-count <?= $cartCount === 0 ? 'hide' : '' ?>" id="cartCount">
+                    <?= $cartCount ?>
+                </span>
             </a>
         </li>
     </ul>
@@ -40,12 +89,10 @@
 
 <!-- بداية قسم CSS (ستايل السلة) -->
 <style>
-    /* تنسيق أيقونة السلة مع العداد */
     .cart-item {
         position: relative;
     }
 
-    /* تنسيق دائرة العداد */
     .cart-count {
         position: absolute;
         top: -8px;
@@ -66,18 +113,15 @@
         border: 2px solid var(--card-bg);
     }
 
-    /* تأثير المرور على العداد */
     .cart-item:hover .cart-count {
         transform: scale(1.1);
         background-color: #ff4f6b;
     }
 
-    /* تنسيق خاص للدارك مود */
     body.dark-mode .cart-count {
         border-color: #222;
     }
 
-    /* إخفاء العداد إذا كان صفر */
     .cart-count.hide {
         display: none;
     }
@@ -90,7 +134,6 @@
 
 <!-- بداية قسم CSS (ستايل زر الدردشة) -->
 <style>
-    /* تنسيق الزر العائم */
     .chat-float-btn {
         position: fixed;
         bottom: 25px;
@@ -111,26 +154,22 @@
         border: 2px solid var(--card-bg, white);
     }
 
-    /* تأثير الهوفر */
     .chat-float-btn:hover {
         background-color: #ff4f6b;
         transform: scale(1.1) rotate(5deg);
         box-shadow: 0 8px 20px rgba(255, 75, 100, 0.4);
     }
 
-    /* تعديل اللون في الوضع الليلي */
     body.dark-mode .chat-float-btn {
         background-color: #bb5c6e;
         border-color: #222;
         box-shadow: 0 6px 16px rgba(0,0,0,0.6);
     }
 
-    /* هوفر الوضع الليلي */
     body.dark-mode .chat-float-btn:hover {
         background-color: #d46b7e;
     }
 
-    /* للأجهزة الصغيرة */
     @media (max-width: 768px) {
         .chat-float-btn {
             bottom: 15px;
@@ -144,45 +183,9 @@
 
 <!-- بداية قسم JavaScript -->
 <script>
-    // دالة تحديث عداد السلة
-    function updateCartCount() {
-        const cart = JSON.parse(localStorage.getItem('teddy_cart')) || {};
-        const cartCount = document.getElementById('cartCount');
-
-        // حساب مجموع الكميات
-        let totalItems = 0;
-        for (let id in cart) {
-            totalItems += cart[id];
-        }
-
-        // تحديث العداد
-        cartCount.textContent = totalItems;
-
-        // إخفاء العداد إذا كان 0
-        if (totalItems === 0) {
-            cartCount.classList.add('hide');
-        } else {
-            cartCount.classList.remove('hide');
-        }
-    }
-
-    // تحديث العداد عند تحميل الصفحة
-    document.addEventListener('DOMContentLoaded', updateCartCount);
-
-    // الاستماع لتغييرات السلة
-    window.addEventListener('storage', function(e) {
-        if (e.key === 'teddy_cart') {
-            updateCartCount();
-        }
-    });
-
-    // تحديث العداد كل ثانية
-    setInterval(updateCartCount, 1000);
-
     // نظام الدارك مود
     const themeSwitch = document.getElementById("themeSwitch");
 
-    // دالة تطبيق الثيم
     function applyTheme(isDark) {
         if (isDark) {
             document.body.classList.add("dark-mode");
@@ -193,7 +196,6 @@
         }
     }
 
-    // تطبيق الثيم المحفوظ
     document.addEventListener("DOMContentLoaded", () => {
         const savedTheme = localStorage.getItem("theme");
         if (savedTheme === "dark") {
@@ -203,16 +205,11 @@
         }
     });
 
-    // تغيير الثيم عند الضغط
     if (themeSwitch) {
         themeSwitch.addEventListener("change", function() {
             const isDark = this.checked;
             applyTheme(isDark);
-            if (isDark) {
-                localStorage.setItem("theme", "dark");
-            } else {
-                localStorage.setItem("theme", "light");
-            }
+            localStorage.setItem("theme", isDark ? "dark" : "light");
         });
     }
 </script>

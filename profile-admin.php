@@ -1,6 +1,9 @@
 <?php
-// profile.php
+// profile-admin.php
 session_start();
+require_once 'db.php';
+
+$pdo = getDB();
 
 // التحقق من تسجيل الدخول
 if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
@@ -8,21 +11,66 @@ if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
     exit;
 }
 
-$user = [
-    'id' => 1,
-    'name' => 'Sarah Admin',
-    'email' => 'admin@teddyshop.com',
-    'role' => 'Admin',
-    'avatar' => 'https://ui-avatars.com/api/?name=Sarah+Admin&background=F8BBD0&color=000&size=150',
-    'joined' => '2024-01-15',
-    'last_login' => '2024-03-28 14:30:00',
-    'phone' => '+1 234 567 890',
-    'address' => '123 Teddy Street, Toy City, USA',
-    'bio' => 'Passionate about creating the perfect teddy bears for children around the world. Teddy Shop founder since 2020.',
-    'total_orders_managed' => 3,
-    'products_added' => 5,
-    'customers_helped' => 20,
-    'response_time' => '2.5 hours'
+$user_id = $_SESSION['user_id'];
+
+// جلب بيانات المستخدم من قاعدة البيانات
+$stmt = $pdo->prepare("
+    SELECT 
+        u.user_id,
+        u.name,
+        u.email,
+        u.role::text as role,
+        u.status::text as status,
+        u.phone,
+        u.avatar,
+        u.address,
+        u.bio,
+        u.created_at as joined,
+        u.last_login
+    FROM users u
+    WHERE u.user_id = ?
+");
+$stmt->execute([$user_id]);
+$userData = $stmt->fetch(PDO::FETCH_ASSOC);
+
+// التحقق من وجود المستخدم
+if (!$userData) {
+    session_destroy();
+    header("Location: auth.php");
+    exit;
+}
+
+// جلب إحصائيات المستخدم (الطلبات التي أدارها، المنتجات التي أضافها، إلخ)
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM orders");
+$stmt->execute();
+$totalOrders = $stmt->fetchColumn();
+
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM products");
+$stmt->execute();
+$totalProducts = $stmt->fetchColumn();
+
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM users WHERE role = 'Customer'");
+$stmt->execute();
+$totalCustomers = $stmt->fetchColumn();
+
+// تنسيق بيانات المستخدم
+$profileUser = [
+        'id' => $userData['user_id'],
+        'name' => $userData['name'],
+        'email' => $userData['email'],
+        'role' => $userData['role'],
+        'status' => $userData['status'],
+        'avatar' => $userData['avatar'] ?: 'https://ui-avatars.com/api/?name=' . urlencode($userData['name']) . '&background=F8BBD0&color=000&size=150',
+        'joined' => $userData['joined'],
+        'last_login' => $userData['last_login'],
+        'phone' => $userData['phone'] ?? '',
+        'address' => $userData['address'] ?? '',
+        'bio' => $userData['bio'] ?? '',
+    // إحصائيات إضافية
+        'total_orders_managed' => $totalOrders,
+        'products_added' => $totalProducts,
+        'customers_helped' => $totalCustomers,
+        'response_time' => '2.5 hours'
 ];
 
 // معالجة تحديث الملف الشخصي
@@ -43,38 +91,75 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $error_message = 'Please enter a valid email address';
     } else {
+        try {
+            $pdo->beginTransaction();
 
-        $user['name'] = $name;
-        $user['email'] = $email;
-        $user['phone'] = $phone;
-        $user['address'] = $address;
-        $user['bio'] = $bio;
+            // تحديث بيانات المستخدم مع إضافة address و bio
+            $stmt = $pdo->prepare("
+                UPDATE users 
+                SET name = ?, 
+                    email = ?, 
+                    phone = ?,
+                    address = ?,
+                    bio = ?
+                WHERE user_id = ?
+            ");
 
-        // تحديث الصورة إذا تم رفع صورة جديدة
-        if (isset($_FILES['avatar']) && $_FILES['avatar']['error'] === UPLOAD_ERR_OK) {
-            $file = $_FILES['avatar'];
-            $allowed_types = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
-            $max_size = 2 * 1024 * 1024;
+            $stmt->execute([
+                    $name,
+                    $email,
+                    $phone,
+                    $address,
+                    $bio,
+                    $user_id
+            ]);
 
-            if (in_array($file['type'], $allowed_types) && $file['size'] <= $max_size) {
-                $extension = pathinfo($file['name'], PATHINFO_EXTENSION);
-                $new_filename = 'avatar_' . $user['id'] . '_' . time() . '.' . $extension;
-                $upload_path = 'uploads/avatars/' . $new_filename;
+            // معالجة رفع الصورة الجديدة
+            if (isset($_FILES['avatar']) && $_FILES['avatar']['error'] === UPLOAD_ERR_OK) {
+                $file = $_FILES['avatar'];
+                $allowed_types = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
+                $max_size = 2 * 1024 * 1024; // 2MB
 
-                if (!is_dir('uploads/avatars')) {
-                    mkdir('uploads/avatars', 0777, true);
-                }
+                if (in_array($file['type'], $allowed_types) && $file['size'] <= $max_size) {
+                    $extension = pathinfo($file['name'], PATHINFO_EXTENSION);
+                    $new_filename = 'avatar_' . $user_id . '_' . time() . '.' . $extension;
+                    $upload_path = 'uploads/avatars/' . $new_filename;
 
-                if (move_uploaded_file($file['tmp_name'], $upload_path)) {
-                    $user['avatar'] = $upload_path;
+                    if (!is_dir('uploads/avatars')) {
+                        mkdir('uploads/avatars', 0777, true);
+                    }
+
+                    if (move_uploaded_file($file['tmp_name'], $upload_path)) {
+                        // حذف الصورة القديمة إذا كانت موجودة
+                        if ($profileUser['avatar'] && strpos($profileUser['avatar'], 'uploads/avatars/') === 0 && file_exists($profileUser['avatar'])) {
+                            unlink($profileUser['avatar']);
+                        }
+
+                        $stmt = $pdo->prepare("UPDATE users SET avatar = ? WHERE user_id = ?");
+                        $stmt->execute([$upload_path, $user_id]);
+                        $profileUser['avatar'] = $upload_path;
+                    }
                 }
             }
+
+            $pdo->commit();
+
+            // تحديث المتغيرات
+            $profileUser['name'] = $name;
+            $profileUser['email'] = $email;
+            $profileUser['phone'] = $phone;
+            $profileUser['address'] = $address;
+            $profileUser['bio'] = $bio;
+
+            // تحديث الجلسة
+            $_SESSION['user_name'] = $name;
+
+            $success_message = 'Profile updated successfully!';
+
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            $error_message = 'Database error: ' . $e->getMessage();
         }
-
-        $success_message = 'Profile updated successfully!';
-
-        // تحديث جلسة المستخدم
-        $_SESSION['user_name'] = $user['name'];
     }
 }
 ?>
@@ -423,21 +508,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="profile-header">
                 <h1><i class="fa-solid fa-user-circle"></i> My Profile</h1>
                 <div class="profile-badge">
-                    <i class="fa-solid fa-crown"></i> Administrator
+                    <i class="fa-solid fa-crown"></i> <?= htmlspecialchars($profileUser['role'] ?? 'Admin') ?>
                 </div>
             </div>
 
             <?php if ($success_message): ?>
                 <div class="alert alert-success">
                     <i class="fa-solid fa-check-circle"></i>
-                    <?= $success_message ?>
+                    <?= htmlspecialchars($success_message) ?>
                 </div>
             <?php endif; ?>
 
             <?php if ($error_message): ?>
                 <div class="alert alert-error">
                     <i class="fa-solid fa-exclamation-triangle"></i>
-                    <?= $error_message ?>
+                    <?= htmlspecialchars($error_message) ?>
                 </div>
             <?php endif; ?>
 
@@ -445,34 +530,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <!-- Sidebar -->
                 <div class="profile-sidebar">
                     <div class="avatar-container">
-                        <img src="<?= $user['avatar'] ?>" alt="<?= $user['name'] ?>" id="avatarPreview">
+                        <img src="<?= htmlspecialchars($profileUser['avatar'] ?? 'https://ui-avatars.com/api/?name=User&background=F8BBD0&color=000&size=150') ?>"
+                             alt="<?= htmlspecialchars($profileUser['name'] ?? 'User') ?>"
+                             id="avatarPreview">
                         <label for="avatarUpload" class="change-avatar-btn" title="Change Avatar">
                             <i class="fa-solid fa-camera"></i>
                         </label>
-                        <input type="file" id="avatarUpload" accept="image/*" style="display: none;">
+                        <input type="file" id="avatarUpload" name="avatar" accept="image/*" style="display: none;" form="profileForm">
                     </div>
-                    <div class="profile-name"><?= htmlspecialchars($user['name']) ?></div>
+                    <div class="profile-name"><?= htmlspecialchars($profileUser['name'] ?? 'User') ?></div>
                     <div class="profile-role">
-                        <i class="fa-solid fa-shield-hal"></i> <?= $user['role'] ?>
-                    </div>
-
-                    <div class="profile-stats">
-                        <div class="stat-item">
-                            <div class="stat-value"><?= $user['total_orders_managed'] ?></div>
-                            <div class="stat-label">Orders Managed</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-value"><?= $user['products_added'] ?></div>
-                            <div class="stat-label">Products Added</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-value"><?= $user['customers_helped'] ?></div>
-                            <div class="stat-label">Customers Helped</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-value"><?= $user['response_time'] ?></div>
-                            <div class="stat-label">Avg Response</div>
-                        </div>
+                        <i class="fa-solid fa-shield-hal"></i> <?= htmlspecialchars($profileUser['role'] ?? 'Customer') ?>
                     </div>
                 </div>
 
@@ -484,19 +552,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <div class="info-grid">
                                 <div class="form-group">
                                     <label><i class="fa-solid fa-user"></i> Full Name</label>
-                                    <input type="text" name="name" class="form-control" value="<?= htmlspecialchars($user['name']) ?>" required>
+                                    <input type="text" name="name" class="form-control" value="<?= htmlspecialchars($profileUser['name'] ?? '') ?>" required>
                                 </div>
                                 <div class="form-group">
                                     <label><i class="fa-solid fa-envelope"></i> Email Address</label>
-                                    <input type="email" name="email" class="form-control" value="<?= htmlspecialchars($user['email']) ?>" required>
+                                    <input type="email" name="email" class="form-control" value="<?= htmlspecialchars($profileUser['email'] ?? '') ?>" required>
                                 </div>
                                 <div class="form-group">
                                     <label><i class="fa-solid fa-phone"></i> Phone Number</label>
-                                    <input type="text" name="phone" class="form-control" value="<?= htmlspecialchars($user['phone']) ?>">
+                                    <input type="text" name="phone" class="form-control" value="<?= htmlspecialchars($profileUser['phone'] ?? '') ?>">
                                 </div>
                                 <div class="form-group">
                                     <label><i class="fa-solid fa-calendar"></i> Member Since</label>
-                                    <input type="text" class="form-control" value="<?= date('F d, Y', strtotime($user['joined'])) ?>" disabled>
+                                    <input type="text" class="form-control" value="<?= !empty($profileUser['joined']) ? date('F d, Y', strtotime($profileUser['joined'])) : 'Just joined' ?>" disabled>
                                 </div>
                             </div>
                         </div>
@@ -505,11 +573,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <h3><i class="fa-solid fa-location-dot"></i> Address & Bio</h3>
                             <div class="form-group">
                                 <label><i class="fa-solid fa-location-dot"></i> Address</label>
-                                <input type="text" name="address" class="form-control" value="<?= htmlspecialchars($user['address']) ?>">
+                                <input type="text" name="address" class="form-control" value="<?= htmlspecialchars($profileUser['address'] ?? '') ?>">
                             </div>
                             <div class="form-group">
                                 <label><i class="fa-solid fa-pen"></i> Bio / About</label>
-                                <textarea name="bio" class="form-control" rows="4"><?= htmlspecialchars($user['bio']) ?></textarea>
+                                <textarea name="bio" class="form-control" rows="4"><?= htmlspecialchars($profileUser['bio'] ?? '') ?></textarea>
                             </div>
                         </div>
 
@@ -518,11 +586,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <div class="info-grid">
                                 <div class="info-field">
                                     <label>Last Login</label>
-                                    <div class="value"><i class="fa-regular fa-clock"></i> <?= date('F d, Y \a\t h:i A', strtotime($user['last_login'])) ?></div>
+                                    <div class="value">
+                                        <i class="fa-regular fa-clock"></i>
+                                        <?php
+                                        if (!empty($profileUser['last_login'])) {
+                                            echo date('F d, Y \a\t h:i A', strtotime($profileUser['last_login']));
+                                        } else {
+                                            echo 'Never';
+                                        }
+                                        ?>
+                                    </div>
                                 </div>
                                 <div class="info-field">
                                     <label>Account Status</label>
-                                    <div class="value"><i class="fa-solid fa-circle" style="color: #4CAF50; font-size: 12px;"></i> Active</div>
+                                    <div class="value">
+                                        <i class="fa-solid fa-circle" style="color: #4CAF50; font-size: 12px;"></i>
+                                        <?= ucfirst($profileUser['status'] ?? 'Active') ?>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -549,36 +629,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Avatar Upload Preview
     const avatarUpload = document.getElementById('avatarUpload');
     const avatarPreview = document.getElementById('avatarPreview');
+    const profileForm = document.getElementById('profileForm');
 
-    avatarUpload.addEventListener('change', function(e) {
-        const file = e.target.files[0];
-        if (file) {
-            const reader = new FileReader();
-            reader.onload = function(event) {
-                avatarPreview.src = event.target.result;
+    if (avatarUpload) {
+        avatarUpload.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    avatarPreview.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
 
                 // Auto submit form to save avatar
-                const formData = new FormData();
-                formData.append('avatar', file);
-                formData.append('name', document.querySelector('input[name="name"]').value);
-                formData.append('email', document.querySelector('input[name="email"]').value);
-                formData.append('phone', document.querySelector('input[name="phone"]').value);
-                formData.append('address', document.querySelector('input[name="address"]').value);
-                formData.append('bio', document.querySelector('textarea[name="bio"]').value);
-
-                fetch('profile.php', {
-                    method: 'POST',
-                    body: formData
-                }).then(() => {
-                    location.reload();
-                });
-            };
-            reader.readAsDataURL(file);
-        }
-    });
+                profileForm.submit();
+            }
+        });
+    }
 
     // Focus effects
-    document.querySelectorAll('.form-control').forEach(input => {
+    document.querySelectorAll('.form-control:not([disabled])').forEach(input => {
         input.addEventListener('focus', function() {
             this.style.transform = 'translateY(-2px)';
         });
@@ -588,21 +658,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     });
 
     // Form validation
-    document.getElementById('profileForm').addEventListener('submit', function(e) {
-        const name = document.querySelector('input[name="name"]').value.trim();
-        const email = document.querySelector('input[name="email"]').value.trim();
+    if (profileForm) {
+        profileForm.addEventListener('submit', function(e) {
+            const name = document.querySelector('input[name="name"]')?.value.trim();
+            const email = document.querySelector('input[name="email"]')?.value.trim();
 
-        if (!name) {
-            e.preventDefault();
-            alert('Please enter your name');
-            return false;
-        }
-        if (!email) {
-            e.preventDefault();
-            alert('Please enter your email');
-            return false;
-        }
-    });
+            if (!name) {
+                e.preventDefault();
+                alert('Please enter your name');
+                return false;
+            }
+            if (!email) {
+                e.preventDefault();
+                alert('Please enter your email');
+                return false;
+            }
+
+            const emailPattern = /^[^\s@]+@([^\s@]+\.)+[^\s@]+$/;
+            if (!emailPattern.test(email)) {
+                e.preventDefault();
+                alert('Please enter a valid email address');
+                return false;
+            }
+        });
+    }
 </script>
 
 <script>

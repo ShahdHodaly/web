@@ -1,14 +1,58 @@
 <?php
 // users.php
 session_start();
+require_once 'db.php';
 
-// تضمين مصفوفة المستخدمين
-require_once 'users-array.php';
+$pdo = getDB();
+
+// جلب جميع المستخدمين من قاعدة البيانات مع إحصائيات الطلبات
+$stmt = $pdo->query("
+    SELECT 
+        u.user_id,
+        u.name,
+        u.email,
+        u.role::text as role,
+        u.status::text as status,
+        u.phone,
+        u.avatar,
+        u.last_login,
+        u.created_at,
+        COUNT(o.order_id) as orders_count,
+        COALESCE(SUM(o.total), 0) as total_spent
+    FROM users u
+    LEFT JOIN orders o ON u.user_id = o.user_id AND o.status != 'cancelled'
+    GROUP BY u.user_id, u.name, u.email, u.role, u.status, u.phone, u.avatar, u.last_login, u.created_at
+    ORDER BY u.user_id
+");
+$usersFromDB = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// تحويل المستخدمين إلى نفس تنسيق المصفوفة القديمة للتوافق مع JavaScript
+$users = [];
+foreach ($usersFromDB as $user) {
+    $users[$user['user_id']] = [
+            'id' => $user['user_id'],
+            'name' => $user['name'],
+            'email' => $user['email'],
+            'role' => $user['role'],
+            'status' => $user['status'],
+            'phone' => $user['phone'],
+            'avatar' => $user['avatar'] ?: 'images/default-avatar.png',
+            'last_login' => $user['last_login'],
+            'joined' => $user['created_at'],
+            'orders' => (int)$user['orders_count'],
+            'spent' => (float)$user['total_spent']
+    ];
+}
+
+// حساب الإحصائيات من قاعدة البيانات
+$totalUsers = count($users);
+$activeUsers = count(array_filter($users, fn($u) => $u['status'] === 'active'));
+$admins = count(array_filter($users, fn($u) => $u['role'] === 'Admin'));
+$totalSpent = array_sum(array_column($users, 'spent'));
 
 // Pagination
 $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
 $perPage = 5;
-$totalUsers = count($users);
 $totalPages = ceil($totalUsers / $perPage);
 $offset = ($page - 1) * $perPage;
 $paginatedUsers = array_slice($users, $offset, $perPage, true);
@@ -505,7 +549,7 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
                         <input type="text"
                                name="q"
                                class="search-input"
-                               placeholder="Search by name, email, role..."
+                               placeholder="Search by name"
                                id="searchInput">
                         <button type="submit" class="search-btn" id="searchBtn">
                             <i class="fa-solid fa-arrow-right"></i> Search
@@ -527,12 +571,6 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
         </div>
 
         <!-- Stats Cards -->
-        <?php
-        $activeUsers = count(array_filter($users, fn($u) => $u['status'] === 'active'));
-        $inactiveUsers = count(array_filter($users, fn($u) => $u['status'] === 'inactive'));
-        $admins = count(array_filter($users, fn($u) => $u['role'] === 'Admin'));
-        $totalSpent = array_sum(array_column($users, 'spent'));
-        ?>
         <div class="stats-mini">
             <div class="stat-mini-card">
                 <div class="stat-mini-info">
@@ -566,10 +604,9 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
 
         <!-- Filters Section -->
         <div class="filters-section">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
-                <h3 style="font-size: 18px; margin: 0;">
-                    <i class="fa-solid fa-filter" style="margin-right: 8px;"></i>
-                    Filters
+            <div class="filters-header">
+                <h3>
+                    <i class="fa-solid fa-filter"></i> Filters
                 </h3>
                 <button class="action-btn clear-filters-btn" style="width: auto; padding: 0 20px; border-radius: 40px;" onclick="clearFilters()">
                     <i class="fa-solid fa-undo" style="margin-right: 5px;"></i> Clear all
@@ -637,7 +674,6 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
 
         <!-- Quick Actions -->
         <div style="display: flex; gap: 15px; justify-content: flex-end; margin-top: 20px;">
-
             <button class="btn-primary" style="background: #ff6b6b; transition: all 0.3s ease;" onclick="bulkDelete()" onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
                 <i class="fa-solid fa-trash-can"></i> Bulk Delete
             </button>
@@ -648,9 +684,9 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
 <script>
     // ===== بيانات المستخدمين من PHP إلى JavaScript =====
     const allUsers = <?php echo json_encode($users); ?>;
-    const usersArray = Object.entries(allUsers).map(([id, user]) => {
+    const usersArray = Object.values(allUsers).map(user => {
         return {
-            id: id,
+            id: user.id,
             name: user.name,
             email: user.email,
             role: user.role,
@@ -690,7 +726,6 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
 
         let html = '';
         paginatedUsers.forEach(user => {
-            // تنسيق تاريخ الانضمام
             const joinDate = new Date(user.joined);
             const formattedJoinDate = joinDate.toLocaleDateString('en-US', {
                 month: 'short',
@@ -698,14 +733,16 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
                 year: 'numeric'
             });
 
-            // تنسيق آخر تسجيل دخول
-            const lastLogin = new Date(user.last_login);
-            const formattedLastLogin = lastLogin.toLocaleDateString('en-US', {
-                month: 'short',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
-            });
+            let formattedLastLogin = 'Never';
+            if (user.last_login) {
+                const lastLogin = new Date(user.last_login);
+                formattedLastLogin = lastLogin.toLocaleDateString('en-US', {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+            }
 
             html += `
                 <tr>
@@ -713,11 +750,11 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
                     <td>
                         <div class="user-info">
                             <div class="user-avatar">
-                                <img src="${user.avatar}" alt="${user.name}">
+                                <img src="${user.avatar}" alt="${escapeHtml(user.name)}" onerror="this.src='images/teddy4.png'">
                             </div>
                             <div>
-                                <div style="font-weight: 600;">${user.name}</div>
-                                <div style="font-size: 11px; color: var(--secondary-text);">${user.email}</div>
+                                <div style="font-weight: 600;">${escapeHtml(user.name)}</div>
+                                <div style="font-size: 11px; color: var(--secondary-text);">${escapeHtml(user.email)}</div>
                             </div>
                         </div>
                     </td>
@@ -735,7 +772,7 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
                             <button class="action-btn edit" onclick="editUser(${user.id})" title="Edit">
                                 <i class="fa-solid fa-pen"></i>
                             </button>
-                            <button class="action-btn email" onclick="emailUser('${user.email}')" title="Send Email">
+                            <button class="action-btn email" onclick="emailUser('${escapeHtml(user.email)}')" title="Send Email">
                                 <i class="fa-solid fa-envelope"></i>
                             </button>
                             <button class="action-btn delete" onclick="deleteUser(${user.id})" title="Delete">
@@ -750,6 +787,12 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
         tbody.innerHTML = html;
         updatePaginationInfo();
         updatePaginationControls();
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     function updatePaginationInfo() {
@@ -769,14 +812,12 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
         const paginationDiv = document.getElementById('paginationControls');
         let html = '';
 
-        // Previous button
         if (currentPage > 1) {
             html += `<a href="#" onclick="changePage(${currentPage - 1}); return false;" class="page-item"><i class="fa-solid fa-chevron-left"></i></a>`;
         } else {
             html += `<span class="page-item disabled"><i class="fa-solid fa-chevron-left"></i></span>`;
         }
 
-        // Page numbers
         for (let i = 1; i <= totalPages; i++) {
             if (i === currentPage) {
                 html += `<span class="page-item active">${i}</span>`;
@@ -785,7 +826,6 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
             }
         }
 
-        // Next button
         if (currentPage < totalPages) {
             html += `<a href="#" onclick="changePage(${currentPage + 1}); return false;" class="page-item"><i class="fa-solid fa-chevron-right"></i></a>`;
         } else {
@@ -800,10 +840,7 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
         displayUsers();
     }
 
-    // ===== وظائف إضافية =====
-
     function showAdminConfirm(message, onConfirm) {
-        // 1. إنشاء overlay الخلفية
         const overlay = document.createElement('div');
         overlay.id = 'admin-confirm-overlay';
         overlay.style.position = 'fixed';
@@ -820,7 +857,6 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
         overlay.style.opacity = '0';
         overlay.style.transition = 'opacity 0.3s ease';
 
-        // 2. إنشاء نافذة الـ Popup
         const popup = document.createElement('div');
         popup.id = 'admin-confirm-popup';
         popup.style.backgroundColor = 'var(--card-bg, #ffffff)';
@@ -836,27 +872,24 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
         popup.style.transition = 'transform 0.25s ease';
         popup.style.border = '1px solid var(--pink, #F8BBD0)';
 
-        // محتوى البوب أب
         popup.innerHTML = `
-        <div style="font-size: 58px; margin-bottom: 12px;">⚠️</div>
-        <h3 style="font-size: 24px; font-weight: 600; margin-bottom: 12px;">Are you sure?</h3>
-        <p style="font-size: 16px; color: var(--secondary-text, #555); margin-bottom: 28px; line-height: 1.5;">${message}</p>
-        <div style="display: flex; gap: 15px; justify-content: center;">
-            <button id="confirm-cancel-btn" style="background: transparent; border: 2px solid var(--pink, #F8BBD0); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer; color: var(--text-color, #333); transition: all 0.2s;">Cancel</button>
-            <button id="confirm-ok-btn" style="background: #d9534f; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer; box-shadow: 0 4px 8px rgba(217,83,79,0.3); transition: all 0.2s;">Delete</button>
-        </div>
-    `;
+            <div style="font-size: 58px; margin-bottom: 12px;">⚠️</div>
+            <h3 style="font-size: 24px; font-weight: 600; margin-bottom: 12px;">Are you sure?</h3>
+            <p style="font-size: 16px; color: var(--secondary-text, #555); margin-bottom: 28px; line-height: 1.5;">${message}</p>
+            <div style="display: flex; gap: 15px; justify-content: center;">
+                <button id="confirm-cancel-btn" style="background: transparent; border: 2px solid var(--pink, #F8BBD0); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer; color: var(--text-color, #333); transition: all 0.2s;">Cancel</button>
+                <button id="confirm-ok-btn" style="background: #d9534f; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer; box-shadow: 0 4px 8px rgba(217,83,79,0.3); transition: all 0.2s;">Delete</button>
+            </div>
+        `;
 
         overlay.appendChild(popup);
         document.body.appendChild(overlay);
 
-        // ظهور الأنيميشن
         setTimeout(() => {
             overlay.style.opacity = '1';
             popup.style.transform = 'scale(1)';
         }, 10);
 
-        // إزالة البوب أب
         function closePopup() {
             overlay.style.opacity = '0';
             popup.style.transform = 'scale(0.9)';
@@ -865,19 +898,14 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
             }, 250);
         }
 
-        // دالة عرض رسالة النجاح (toast منتصف الصفحة)
         function showSuccessToast() {
             const toast = document.createElement('div');
-            toast.id = 'admin-success-toast';
             toast.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 12px;">
-
-                <div>
-                    <strong style="font-size: 18px;">Removed from the system!</strong>
-
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <i class="fa-solid fa-check-circle" style="font-size: 28px; color: #28a745;"></i>
+                    <div><strong style="font-size: 18px;">User removed successfully!</strong></div>
                 </div>
-            </div>
-        `;
+            `;
             toast.style.position = 'fixed';
             toast.style.top = '50%';
             toast.style.left = '50%';
@@ -889,17 +917,13 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
             toast.style.boxShadow = '0 20px 35px rgba(0,0,0,0.2)';
             toast.style.zIndex = '10000';
             toast.style.fontFamily = "'Poppins', sans-serif";
-            toast.style.borderRight = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderLeft = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderTop = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderBottom = '4px solid var(--pink, #F8BBD0)';
+            toast.style.border = '2px solid #28a745';
             toast.style.backdropFilter = 'blur(12px)';
             toast.style.opacity = '0';
             toast.style.transition = 'all 0.25s cubic-bezier(0.34, 1.2, 0.64, 1)';
             toast.style.fontWeight = '500';
             toast.style.textAlign = 'center';
             toast.style.minWidth = '280px';
-            toast.style.boxSizing = 'border-box';
 
             document.body.appendChild(toast);
 
@@ -908,7 +932,6 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
                 toast.style.transform = 'translate(-50%, -50%) scale(1)';
             }, 20);
 
-            // إخفاء الرسالة بعد 2.5 ثانية
             setTimeout(() => {
                 toast.style.opacity = '0';
                 toast.style.transform = 'translate(-50%, -50%) scale(0.95)';
@@ -918,7 +941,6 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
             }, 2500);
         }
 
-        // أحداث الأزرار
         const cancelBtn = popup.querySelector('#confirm-cancel-btn');
         const confirmBtn = popup.querySelector('#confirm-ok-btn');
 
@@ -926,20 +948,51 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
             closePopup();
         });
 
-        confirmBtn.addEventListener('click', () => {
-            // ✅ بدون حذف فعلي – فقط استدعاء callback إذا أردت تنفيذ شيء لاحقاً (مثل تحديث واجهة)
+        confirmBtn.addEventListener('click', async () => {
             if (onConfirm && typeof onConfirm === 'function') {
-                onConfirm();  // هون بتقدر تعمل أي شيء زي تحديث UI بدون حذف حقيقي
+                await onConfirm();
             }
             closePopup();
-            // عرض رسالة النجاح الجميلة في منتصف الصفحة
             showSuccessToast();
         });
 
-        // إغلاق عند الضغط على overlay
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) closePopup();
         });
+    }
+
+    async function deleteUserFromDB(userId) {
+        try {
+            const response = await fetch('delete-user.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: 'user_id=' + userId
+            });
+            const result = await response.json();
+            return result.success;
+        } catch (error) {
+            console.error('Error:', error);
+            return false;
+        }
+    }
+
+    async function bulkDeleteFromDB(userIds) {
+        try {
+            const response = await fetch('bulk-delete-users.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ user_ids: userIds })
+            });
+            const result = await response.json();
+            return result.success;
+        } catch (error) {
+            console.error('Error:', error);
+            return false;
+        }
     }
 
     function viewUser(id) {
@@ -951,11 +1004,18 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
     }
 
     function emailUser(email) {
-        window.location.href = 'mailto:' + email;
+        window.location.href = 'mailto:' + encodeURIComponent(email);
     }
 
     function deleteUser(id) {
-        showAdminConfirm('Are you sure you want to delete this user?', () => {})
+        showAdminConfirm('Are you sure you want to delete this user?', async () => {
+            const success = await deleteUserFromDB(id);
+            if (success) {
+                const index = usersArray.findIndex(u => u.id == id);
+                if (index !== -1) usersArray.splice(index, 1);
+                filterUsers();
+            }
+        });
     }
 
     function exportUsers() {
@@ -965,8 +1025,6 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
     function importUsers() {
         alert('Import users feature (Demo)');
     }
-
-
 
     function bulkDelete() {
         let selected = [];
@@ -979,7 +1037,56 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
             return;
         }
 
-       showAdminConfirm('Are you sure you want to delete these '+ selected.length+  ' users?', () => {})
+        showAdminConfirm('Are you sure you want to delete these ' + selected.length + ' users?', async () => {
+            const success = await bulkDeleteFromDB(selected);
+            if (success) {
+                for (const id of selected) {
+                    const index = usersArray.findIndex(u => u.id == id);
+                    if (index !== -1) usersArray.splice(index, 1);
+                }
+                filterUsers();
+                const selectAll = document.getElementById('selectAll');
+                if (selectAll) selectAll.checked = false;
+            }
+        });
+    }
+
+    function filterUsers() {
+        const role = document.getElementById('roleFilter').value;
+        const status = document.getElementById('statusFilter').value;
+        const sortBy = document.getElementById('sortFilter').value;
+
+        filteredUsers = usersArray.filter(user => {
+            let show = true;
+
+            if (role && user.role !== role) {
+                show = false;
+            }
+
+            if (status && user.status !== status) {
+                show = false;
+            }
+
+            return show;
+        });
+
+        if (sortBy) {
+            filteredUsers.sort((a, b) => {
+                if (sortBy === 'name') {
+                    return a.name.localeCompare(b.name);
+                } else if (sortBy === 'newest') {
+                    return new Date(b.joined) - new Date(a.joined);
+                } else if (sortBy === 'orders') {
+                    return b.orders - a.orders;
+                } else if (sortBy === 'spent') {
+                    return b.spent - a.spent;
+                }
+                return 0;
+            });
+        }
+
+        currentPage = 1;
+        displayUsers();
     }
 
     function clearFilters() {
@@ -991,78 +1098,38 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
         currentPage = 1;
         displayUsers();
 
-        // تأثير بسيط
         const filterSection = document.querySelector('.filters-section');
-        filterSection.style.transform = 'scale(1.02)';
-        setTimeout(() => {
-            filterSection.style.transform = 'scale(1)';
-        }, 200);
+        if (filterSection) {
+            filterSection.style.transform = 'scale(1.02)';
+            setTimeout(() => {
+                filterSection.style.transform = 'scale(1)';
+            }, 200);
+        }
     }
 
-    // تحديد الكل
     document.getElementById('selectAll')?.addEventListener('change', function() {
         document.querySelectorAll('.user-checkbox').forEach(cb => {
             cb.checked = this.checked;
         });
     });
 
-    // تهيئة الصفحة
     document.addEventListener('DOMContentLoaded', function() {
         console.log('Page loaded, displaying users...');
         displayUsers();
 
-        // الفلاتر
         const filterSelects = document.querySelectorAll('.filter-select');
         filterSelects.forEach(select => {
             select.addEventListener('change', function() {
                 this.style.backgroundColor = 'var(--pink)';
                 this.style.color = '#000';
-
                 setTimeout(() => {
                     this.style.backgroundColor = 'var(--bg-color)';
                     this.style.color = 'var(--text-color)';
                 }, 200);
-
-                // تطبيق الفلترة
-                const role = document.getElementById('roleFilter').value;
-                const status = document.getElementById('statusFilter').value;
-                const sortBy = document.getElementById('sortFilter').value;
-
-                filteredUsers = usersArray.filter(user => {
-                    let show = true;
-
-                    if (role && user.role !== role) {
-                        show = false;
-                    }
-
-                    if (status && user.status !== status) {
-                        show = false;
-                    }
-
-                    return show;
-                });
-
-                if (sortBy) {
-                    filteredUsers.sort((a, b) => {
-                        if (sortBy === 'name') {
-                            return a.name.localeCompare(b.name);
-                        } else if (sortBy === 'newest') {
-                            return new Date(b.joined) - new Date(a.joined);
-                        } else if (sortBy === 'orders') {
-                            return b.orders - a.orders;
-                        } else if (sortBy === 'spent') {
-                            return b.spent - a.spent;
-                        }
-                        return 0;
-                    });
-                }
-
-                currentPage = 1;
-                displayUsers();
+                filterUsers();
             });
         });
 
-        // تأثيرات السيرش بار
         const searchInput = document.getElementById('searchInput');
         const searchBtn = document.getElementById('searchBtn');
         const addBtn = document.getElementById('addUserBtn');
@@ -1071,11 +1138,9 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
             searchInput.addEventListener('focus', function() {
                 this.style.transform = 'translateY(-2px)';
             });
-
             searchInput.addEventListener('blur', function() {
                 this.style.transform = 'translateY(0)';
             });
-
             searchInput.addEventListener('input', function() {
                 if (this.value.length > 0) {
                     searchBtn.style.background = 'var(--lavender)';
@@ -1091,7 +1156,6 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
             addBtn.addEventListener('mouseenter', function() {
                 this.querySelector('div:first-child').style.transform = 'rotate(90deg)';
             });
-
             addBtn.addEventListener('mouseleave', function() {
                 this.querySelector('div:first-child').style.transform = 'rotate(0)';
             });
@@ -1102,7 +1166,6 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
 <script>
     (function() {
         const themeSwitchMain = document.getElementById('themeSwitchSidebar');
-
         function applyTheme(isDark) {
             if (isDark) {
                 document.body.classList.add('dark-mode');
@@ -1112,16 +1175,13 @@ $paginatedUsers = array_slice($users, $offset, $perPage, true);
                 if (themeSwitchMain) themeSwitchMain.checked = false;
             }
         }
-
         const savedTheme = localStorage.getItem('theme');
         if (savedTheme === 'dark') applyTheme(true);
         else applyTheme(false);
-
         if (themeSwitchMain) {
             themeSwitchMain.addEventListener('change', function(e) {
-                const isDark = this.checked;
-                applyTheme(isDark);
-                localStorage.setItem('theme', isDark ? 'dark' : 'light');
+                applyTheme(this.checked);
+                localStorage.setItem('theme', this.checked ? 'dark' : 'light');
             });
         }
     })();

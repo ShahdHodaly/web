@@ -1,21 +1,51 @@
 <?php
 // edit-user.php
 session_start();
+require_once 'db.php';
 
-// تضمين مصفوفة المستخدمين
-require_once 'users-array.php';
+$pdo = getDB();
 
 // الحصول على ID المستخدم من الرابط
 $user_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
+// جلب بيانات المستخدم من قاعدة البيانات
+$stmt = $pdo->prepare("
+    SELECT 
+        u.user_id,
+        u.name,
+        u.email,
+        u.role::text as role,
+        u.status::text as status,
+        u.phone,
+        u.avatar,
+        u.last_login,
+        u.created_at
+    FROM users u
+    WHERE u.user_id = ?
+");
+$stmt->execute([$user_id]);
+$userData = $stmt->fetch(PDO::FETCH_ASSOC);
+
 // التحقق من وجود المستخدم
-if (!isset($users[$user_id])) {
+if (!$userData) {
     $_SESSION['error'] = 'User not found';
     header("Location: users.php");
     exit;
 }
 
-$user = $users[$user_id];
+// تنسيق بيانات المستخدم
+$user = [
+        'id' => $userData['user_id'],
+        'name' => $userData['name'],
+        'email' => $userData['email'],
+        'role' => $userData['role'],
+        'status' => $userData['status'],
+        'phone' => $userData['phone'],
+        'avatar' => $userData['avatar'] ?: 'images/teddy4.png',
+        'last_login' => $userData['last_login'],
+        'joined' => $userData['created_at']
+];
+
 $pageTitle = "Edit " . $user['name'] . " | Teddy Shop";
 
 // متغيرات النموذج
@@ -28,53 +58,63 @@ $success = false;
 
 // معالجة إرسال النموذج
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $name = trim($_POST['name'] ?? '');
-    $email = trim($_POST['email'] ?? '');
+    // الاسم والبريد الإلكتروني لا يتم أخذهما من POST (لأنهما disabled)
+    // فقط الدور والحالة يتم تحديثهما
     $role = trim($_POST['role'] ?? '');
     $status = trim($_POST['status'] ?? 'active');
 
     // التحقق من صحة البيانات
-    if (empty($name)) {
-        $errors[] = 'User name is required';
-    }
-
-    if (empty($email)) {
-        $errors[] = 'Email address is required';
-    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        $errors[] = 'Please enter a valid email address';
-    }
-
     if (empty($role)) {
         $errors[] = 'User role is required';
     }
 
-    // التحقق من عدم تكرار البريد الإلكتروني (باستثناء المستخدم الحالي)
-    foreach ($users as $id => $existing_user) {
-        if ($id != $user_id && strtolower($existing_user['email']) === strtolower($email)) {
-            $errors[] = 'Email address already exists';
-            break;
-        }
+    // التحقق من أن الدور مسموح به
+    $allowed_roles = ['Customer', 'Admin'];
+    if (!in_array($role, $allowed_roles)) {
+        $errors[] = 'Invalid user role';
     }
 
-    // إذا لم يكن هناك أخطاء، قم بتحديث المستخدم
+    // التحقق من أن الحالة مسموح بها
+    $allowed_status = ['active', 'inactive'];
+    if (!in_array($status, $allowed_status)) {
+        $errors[] = 'Invalid account status';
+    }
+
+    // إذا لم يكن هناك أخطاء، قم بتحديث المستخدم في قاعدة البيانات
     if (empty($errors)) {
-        // تحديث الصورة إذا تغير الاسم
-        $avatar = $user['avatar'];
-        if ($name != $user['name']) {
-            $avatar = 'https://ui-avatars.com/api/?name=' . urlencode($name) . '&background=F8BBD0&color=000&size=40';
+        try {
+            $pdo->beginTransaction();
+
+            // تحديث بيانات المستخدم (الاسم والبريد الإلكتروني لا يتم تحديثهما)
+            $stmt = $pdo->prepare("
+                UPDATE users 
+                SET role = ?::user_role, 
+                    status = ?::user_status
+                WHERE user_id = ?
+            ");
+
+            $stmt->execute([
+                    $role,
+                    $status,
+                    $user_id
+            ]);
+
+            $pdo->commit();
+            $success = true;
+
+            // تحديث Session إذا كان المستخدم يعدل نفسه
+            if ($user_id == ($_SESSION['user_id'] ?? 0)) {
+                $_SESSION['role'] = $role;
+            }
+
+            // تحديث المتغيرات المعروضة
+            $user['role'] = $role;
+            $user['status'] = $status;
+
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            $errors[] = 'Database error: ' . $e->getMessage();
         }
-
-        // تحديث بيانات المستخدم (في التطبيق الحقيقي، ستقوم بتحديث قاعدة البيانات)
-        $users[$user_id]['name'] = $name;
-        $users[$user_id]['email'] = $email;
-        $users[$user_id]['role'] = $role;
-        $users[$user_id]['status'] = $status;
-        $users[$user_id]['avatar'] = $avatar;
-
-        $success = true;
-
-        // تحديث المتغيرات المعروضة
-        $user = $users[$user_id];
     }
 }
 ?>
@@ -136,6 +176,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin-bottom: 20px;
         }
 
+        .info-note {
+            background: rgba(248, 187, 208, 0.15);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 25px;
+            font-size: 13px;
+            color: var(--secondary-text);
+            border-left: 4px solid var(--pink);
+        }
+        .info-note i {
+            color: var(--primary);
+            font-size: 16px;
+            margin-right: 8px;
+        }
+        .info-note strong {
+            color: var(--text-color);
+        }
+
         .form-group {
             margin-bottom: 25px;
         }
@@ -171,6 +229,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: var(--secondary-text);
             opacity: 0.7;
             cursor: not-allowed;
+            border-color: rgba(128,128,128,0.1);
         }
 
         .form-control:focus {
@@ -180,17 +239,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         select.form-control {
             cursor: pointer;
         }
+        select.form-control:disabled {
+            cursor: not-allowed;
+        }
 
         .status-toggle {
             display: flex;
             gap: 20px;
             align-items: center;
+            flex-wrap: wrap;
         }
         .status-option {
             display: flex;
             align-items: center;
             gap: 8px;
             cursor: pointer;
+            padding: 10px 20px;
+            border-radius: 40px;
+            background: var(--bg-color);
+            transition: all 0.3s ease;
+            border: 1px solid transparent;
+        }
+        .status-option:hover {
+            background: rgba(248, 187, 208, 0.2);
+            border-color: var(--pink);
         }
         .status-option input {
             width: 18px;
@@ -265,6 +337,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             object-fit: cover;
         }
 
+        .field-note {
+            font-size: 12px;
+            color: var(--secondary-text);
+            margin-top: 6px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .field-note i {
+            font-size: 11px;
+        }
+
         @keyframes fadeInUp {
             from { opacity: 0; transform: translateY(20px); }
             to { opacity: 1; transform: translateY(0); }
@@ -275,6 +359,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             .admin-main { width: 100%; }
             .form-container { margin: 0 15px; }
             .form-buttons { flex-direction: column; }
+            .status-toggle { flex-direction: column; align-items: stretch; }
+            .status-option { justify-content: center; }
         }
     </style>
 </head>
@@ -289,7 +375,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <i class="fa-solid fa-pen-to-square" style="color: var(--primary);"></i>
                     Edit User
                 </h1>
-                <p>Update user information</p>
+                <p>Update user role and account status</p>
                 <div class="user-badge">
                     <i class="fa-regular fa-id-card"></i> User ID: #<?= $user_id ?>
                 </div>
@@ -313,21 +399,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </div>
             <?php endif; ?>
 
-            <div class="avatar-preview" id="avatarPreview">
-                <img src="<?= $user['avatar'] ?>" alt="Avatar Preview">
+            <div class="info-note">
+                <i class="fa-solid fa-shield-haltered"></i>
+                <strong>Account Information</strong><br>
+                User name and email address cannot be changed after account creation. Only role and status can be modified.
+            </div>
+
+            <div class="avatar-preview">
+                <img src="<?= htmlspecialchars($user['avatar']) ?>" alt="Avatar Preview" onerror="this.src='images/teddy4.png'">
+                <div class="field-note" style="justify-content: center; margin-top: 8px;">
+                    <i class="fa-solid fa-camera"></i> Profile picture
+                </div>
             </div>
 
             <form action="edit-user.php?id=<?= $user_id ?>" method="POST" id="userForm">
-                <!-- User Name -->
+                <!-- User Name (Disabled - Cannot be changed) -->
                 <div class="form-group">
-                    <label><i class="fa-solid fa-user"></i> Full Name <span class="required">*</span></label>
-                    <input type="text" name="name" class="form-control" value="<?= htmlspecialchars($name) ?>" id="userName" required>
+                    <label><i class="fa-solid fa-user"></i> Full Name</label>
+                    <input type="text" name="name" class="form-control" value="<?= htmlspecialchars($name) ?>" disabled>
+                    <div class="field-note">
+                        <i class="fa-solid fa-lock"></i> Name cannot be changed
+                    </div>
                 </div>
 
-                <!-- Email -->
+                <!-- Email (Disabled - Cannot be changed) -->
                 <div class="form-group">
-                    <label><i class="fa-solid fa-envelope"></i> Email Address <span class="required">*</span></label>
+                    <label><i class="fa-solid fa-envelope"></i> Email Address</label>
                     <input type="email" name="email" class="form-control" value="<?= htmlspecialchars($email) ?>" disabled>
+                    <div class="field-note">
+                        <i class="fa-solid fa-lock"></i> Email cannot be changed
+                    </div>
                 </div>
 
                 <!-- Role -->
@@ -335,22 +436,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <label><i class="fa-solid fa-briefcase"></i> User Role <span class="required">*</span></label>
                     <select name="role" class="form-control" required>
                         <option value="Customer" <?= $role == 'Customer' ? 'selected' : '' ?>>Customer</option>
-                        <option value="Moderator" <?= $role == 'Moderator' ? 'selected' : '' ?>>Moderator</option>
                         <option value="Admin" <?= $role == 'Admin' ? 'selected' : '' ?>>Admin</option>
                     </select>
+                    <div class="field-note">
+                        <i class="fa-solid fa-shield"></i> Admins have full access to the dashboard
+                    </div>
                 </div>
 
                 <!-- Status -->
                 <div class="form-group">
-                    <label><i class="fa-solid fa-circle-info"></i> Account Status</label>
+                    <label><i class="fa-solid fa-circle-info"></i> Account Status <span class="required">*</span></label>
                     <div class="status-toggle">
                         <label class="status-option">
                             <input type="radio" name="status" value="active" <?= $status == 'active' ? 'checked' : '' ?>>
-                            <i class="fa-solid fa-circle" style="color: #4CAF50; font-size: 12px;"></i> Active
+                            <i class="fa-solid fa-circle" style="color: #4CAF50; font-size: 12px;"></i>
+                            <span>Active</span>
+                            <span style="font-size: 11px; color: var(--secondary-text);">(User can log in)</span>
                         </label>
                         <label class="status-option">
                             <input type="radio" name="status" value="inactive" <?= $status == 'inactive' ? 'checked' : '' ?>>
-                            <i class="fa-solid fa-circle" style="color: #F44336; font-size: 12px;"></i> Inactive
+                            <i class="fa-solid fa-circle" style="color: #F44336; font-size: 12px;"></i>
+                            <span>Inactive</span>
+                            <span style="font-size: 11px; color: var(--secondary-text);">(User cannot log in)</span>
                         </label>
                     </div>
                 </div>
@@ -370,50 +477,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </div>
 
 <script>
-    // تحديث معاينة الصورة عند تغيير الاسم
-    const userNameInput = document.getElementById('userName');
-    const avatarPreview = document.getElementById('avatarPreview').querySelector('img');
-    const originalName = '<?= addslashes($user['name']) ?>';
+    // Form validation
+    document.getElementById('userForm').addEventListener('submit', function(e) {
+        const role = document.querySelector('select[name="role"]').value;
+        const statusChecked = document.querySelector('input[name="status"]:checked');
 
-    userNameInput.addEventListener('input', function() {
-        const name = this.value.trim();
-        if (name && name !== originalName) {
-            const encodedName = encodeURIComponent(name);
-            avatarPreview.src = `https://ui-avatars.com/api/?name=${encodedName}&background=F8BBD0&color=000&size=100`;
-        } else {
-            avatarPreview.src = '<?= $user['avatar'] ?>';
+        if (!role) {
+            e.preventDefault();
+            alert('Please select a user role');
+            return false;
+        }
+
+        if (!statusChecked) {
+            e.preventDefault();
+            alert('Please select account status');
+            return false;
         }
     });
 
-    // Form validation
-    document.getElementById('userForm').addEventListener('submit', function(e) {
-        const name = document.querySelector('input[name="name"]').value.trim();
-        const email = document.querySelector('input[name="email"]').value.trim();
-        const role = document.querySelector('select[name="role"]').value;
+    // Focus effects for select
+    const selectInput = document.querySelector('select[name="role"]');
+    if (selectInput) {
+        selectInput.addEventListener('focus', function() {
+            this.style.transform = 'translateY(-2px)';
+        });
+        selectInput.addEventListener('blur', function() {
+            this.style.transform = 'translateY(0)';
+        });
+    }
 
-        if (!name) {
-            e.preventDefault();
-            alert('Please enter user name');
-            return false;
-        }
-        if (!email) {
-            e.preventDefault();
-            alert('Please enter email address');
-            return false;
-        }
-        if (!role) {
-            e.preventDefault();
-            alert('Please select a role');
-            return false;
-        }
-
-        // التحقق من صيغة البريد الإلكتروني
-        const emailPattern = /^[^\s@]+@([^\s@]+\.)+[^\s@]+$/;
-        if (!emailPattern.test(email)) {
-            e.preventDefault();
-            alert('Please enter a valid email address');
-            return false;
-        }
+    // Status option hover effect
+    document.querySelectorAll('.status-option').forEach(option => {
+        option.addEventListener('mouseenter', function() {
+            this.style.transform = 'translateX(5px)';
+        });
+        option.addEventListener('mouseleave', function() {
+            this.style.transform = 'translateX(0)';
+        });
     });
 </script>
 

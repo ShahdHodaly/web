@@ -1,28 +1,89 @@
 <?php
 // user-details.php
 session_start();
+require_once 'db.php';
 
-// تضمين المصفوفات
-require_once 'users-array.php';
-require_once 'orders-array.php';
+$pdo = getDB();
 
 // الحصول على ID المستخدم من الرابط
 $user_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
+// جلب بيانات المستخدم من قاعدة البيانات
+$stmt = $pdo->prepare("
+    SELECT 
+        u.user_id,
+        u.name,
+        u.email,
+        u.role::text as role,
+        u.status::text as status,
+        u.phone,
+        u.avatar,
+        u.last_login,
+        u.created_at as joined
+    FROM users u
+    WHERE u.user_id = ?
+");
+$stmt->execute([$user_id]);
+$userData = $stmt->fetch(PDO::FETCH_ASSOC);
+
 // التحقق من وجود المستخدم
-if (!isset($users[$user_id])) {
+if (!$userData) {
     $_SESSION['error'] = 'User not found';
     header("Location: users.php");
     exit;
 }
 
-$user = $users[$user_id];
-$pageTitle = $user['name'] . " | Teddy Shop";
+// تنسيق بيانات المستخدم
+$userDetails = [
+        'id' => $userData['user_id'],
+        'name' => $userData['name'],
+        'email' => $userData['email'],
+        'role' => $userData['role'],
+        'status' => $userData['status'],
+        'phone' => $userData['phone'],
+        'avatar' => $userData['avatar'] ?: 'images/teddy4.png',
+        'last_login' => $userData['last_login'],
+        'joined' => $userData['joined']
+];
 
-// جلب طلبات المستخدم
-$user_orders = getUserOrders($user_id, $orders);
+$pageTitle = $userDetails['name'] . " | Teddy Shop";
+
+// جلب طلبات المستخدم من قاعدة البيانات
+$stmt = $pdo->prepare("
+    SELECT 
+        o.order_id,
+        o.order_number,
+        o.status::text as status,
+        o.payment_method::text as payment_method,
+        o.total,
+        o.created_at as date
+    FROM orders o
+    WHERE o.user_id = ?
+    ORDER BY o.created_at DESC
+");
+$stmt->execute([$user_id]);
+$userOrders = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// تنسيق الطلبات
+$user_orders = [];
+foreach ($userOrders as $order) {
+    $user_orders[$order['order_id']] = [
+            'order_number' => $order['order_number'],
+            'date' => $order['date'],
+            'total' => (float)$order['total'],
+            'status' => $order['status'],
+            'payment_method' => $order['payment_method']
+    ];
+}
+
+// حساب الإحصائيات
 $total_orders = count($user_orders);
 $total_spent = array_sum(array_column($user_orders, 'total'));
+
+// حساب عدد الأيام منذ الانضمام
+$joinDate = new DateTime($userDetails['joined']);
+$today = new DateTime();
+$daysSinceJoined = $joinDate->diff($today)->days;
 
 // آخر 5 طلبات فقط
 $recent_orders = array_slice($user_orders, 0, 5, true);
@@ -306,39 +367,53 @@ $recent_orders = array_slice($user_orders, 0, 5, true);
             <!-- User Header -->
             <div class="user-header">
                 <div class="user-title">
-                    <h1><?= htmlspecialchars($user['name']) ?></h1>
-                    <p><i class="fa-regular fa-envelope"></i> <?= htmlspecialchars($user['email']) ?></p>
+                    <h1><?= htmlspecialchars($userDetails['name'] ?? 'User') ?></h1>
+                    <p><i class="fa-regular fa-envelope"></i> <?= htmlspecialchars($userDetails['email'] ?? '') ?></p>
                 </div>
-                <div class="user-status status-<?= $user['status'] ?>">
-                    <i class="fa-solid fa-<?= $user['status'] == 'active' ? 'circle' : 'circle-xmark' ?>" style="font-size: 10px;"></i>
-                    <?= ucfirst($user['status']) ?>
+                <div class="user-status status-<?= $userDetails['status'] ?? 'active' ?>">
+                    <i class="fa-solid fa-<?= ($userDetails['status'] ?? 'active') == 'active' ? 'circle' : 'circle-xmark' ?>" style="font-size: 10px;"></i>
+                    <?= ucfirst($userDetails['status'] ?? 'Active') ?>
                 </div>
             </div>
 
             <!-- Profile Section -->
             <div class="profile-section">
                 <div class="profile-avatar">
-                    <img src="<?= $user['avatar'] ?>" alt="<?= htmlspecialchars($user['name']) ?>">
-                    <h3><?= htmlspecialchars($user['name']) ?></h3>
-                    <p><?= htmlspecialchars($user['role']) ?></p>
+                    <img src="<?= htmlspecialchars($userDetails['avatar'] ?? 'images/teddy4.png') ?>"
+                         alt="<?= htmlspecialchars($userDetails['name'] ?? 'User') ?>"
+                         onerror="this.src='images/teddy4.png'">
+                    <h3><?= htmlspecialchars($userDetails['name'] ?? 'User') ?></h3>
+                    <p><?= htmlspecialchars($userDetails['role'] ?? 'Customer') ?></p>
                 </div>
 
                 <div class="info-grid">
                     <div class="info-card">
                         <h4><i class="fa-regular fa-calendar"></i> Joined</h4>
-                        <p><?= date('F d, Y', strtotime($user['joined'])) ?></p>
-                        <small><?= date('l', strtotime($user['joined'])) ?></small>
+                        <p><?= !empty($userDetails['joined']) ? date('F d, Y', strtotime($userDetails['joined'])) : 'Unknown' ?></p>
+                        <small><?= !empty($userDetails['joined']) ? date('l', strtotime($userDetails['joined'])) : '' ?></small>
                     </div>
                     <div class="info-card">
                         <h4><i class="fa-regular fa-clock"></i> Last Login</h4>
-                        <p><?= date('M d, Y', strtotime($user['last_login'])) ?></p>
-                        <small><?= date('h:i A', strtotime($user['last_login'])) ?></small>
+                        <?php if (!empty($userDetails['last_login'])): ?>
+                            <p><?= date('M d, Y', strtotime($userDetails['last_login'])) ?></p>
+                            <small><?= date('h:i A', strtotime($userDetails['last_login'])) ?></small>
+                        <?php else: ?>
+                            <p>Never</p>
+                            <small>No login recorded</small>
+                        <?php endif; ?>
                     </div>
                     <div class="info-card">
                         <h4><i class="fa-solid fa-envelope"></i> Email</h4>
-                        <p><?= htmlspecialchars($user['email']) ?></p>
+                        <p><?= htmlspecialchars($userDetails['email'] ?? '') ?></p>
                         <small>Primary email address</small>
                     </div>
+                    <?php if (!empty($userDetails['phone'])): ?>
+                        <div class="info-card">
+                            <h4><i class="fa-solid fa-phone"></i> Phone</h4>
+                            <p><?= htmlspecialchars($userDetails['phone']) ?></p>
+                            <small>Contact number</small>
+                        </div>
+                    <?php endif; ?>
                 </div>
             </div>
 
@@ -356,12 +431,12 @@ $recent_orders = array_slice($user_orders, 0, 5, true);
                 </div>
                 <div class="stat-card">
                     <i class="fa-solid fa-calendar-week"></i>
-                    <div class="stat-value"><?= floor((time() - strtotime($user['joined'])) / (60 * 60 * 24)) ?> days</div>
+                    <div class="stat-value"><?= $daysSinceJoined ?> days</div>
                     <div class="stat-label">Member Since</div>
                 </div>
             </div>
 
-            <!-- Recent Orders - من مصفوفة الطلبات -->
+            <!-- Recent Orders - من قاعدة البيانات -->
             <div class="recent-section">
                 <div class="section-title">
                     <i class="fa-solid fa-clock-rotate-left"></i>
@@ -385,9 +460,9 @@ $recent_orders = array_slice($user_orders, 0, 5, true);
                                 <td><?= date('M d, Y', strtotime($order['date'])) ?></td>
                                 <td class="product-price">$<?= number_format($order['total'], 2) ?></td>
                                 <td>
-                                <span class="status-badge-sm status-<?= $order['status'] ?>">
-                                    <?= ucfirst($order['status']) ?>
-                                </span>
+                                    <span class="status-badge-sm status-<?= $order['status'] ?>">
+                                        <?= ucfirst($order['status']) ?>
+                                    </span>
                                 </td>
                                 <td>
                                     <a href="order-details-admin.php?id=<?= $id ?>" style="color: var(--primary);">
@@ -416,7 +491,7 @@ $recent_orders = array_slice($user_orders, 0, 5, true);
                 <a href="edit-user.php?id=<?= $user_id ?>" class="btn-action btn-edit">
                     <i class="fa-solid fa-pen"></i> Edit User
                 </a>
-                <button class="btn-action btn-delete" onclick="deleteUser(<?= $user_id ?>, '<?= addslashes($user['name']) ?>')">
+                <button class="btn-action btn-delete" onclick="deleteUser(<?= $user_id ?>, '<?= addslashes($userDetails['name'] ?? 'User') ?>')">
                     <i class="fa-solid fa-trash"></i> Delete User
                 </button>
                 <a href="users.php" class="btn-action btn-back">
@@ -428,9 +503,7 @@ $recent_orders = array_slice($user_orders, 0, 5, true);
 </div>
 
 <script>
-
     function showAdminConfirm(message, onConfirm) {
-        // 1. إنشاء overlay الخلفية
         const overlay = document.createElement('div');
         overlay.id = 'admin-confirm-overlay';
         overlay.style.position = 'fixed';
@@ -447,7 +520,6 @@ $recent_orders = array_slice($user_orders, 0, 5, true);
         overlay.style.opacity = '0';
         overlay.style.transition = 'opacity 0.3s ease';
 
-        // 2. إنشاء نافذة الـ Popup
         const popup = document.createElement('div');
         popup.id = 'admin-confirm-popup';
         popup.style.backgroundColor = 'var(--card-bg, #ffffff)';
@@ -463,27 +535,24 @@ $recent_orders = array_slice($user_orders, 0, 5, true);
         popup.style.transition = 'transform 0.25s ease';
         popup.style.border = '1px solid var(--pink, #F8BBD0)';
 
-        // محتوى البوب أب
         popup.innerHTML = `
-        <div style="font-size: 58px; margin-bottom: 12px;">⚠️</div>
-        <h3 style="font-size: 24px; font-weight: 600; margin-bottom: 12px;">Are you sure?</h3>
-        <p style="font-size: 16px; color: var(--secondary-text, #555); margin-bottom: 28px; line-height: 1.5;">${message}</p>
-        <div style="display: flex; gap: 15px; justify-content: center;">
-            <button id="confirm-cancel-btn" style="background: transparent; border: 2px solid var(--pink, #F8BBD0); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer; color: var(--text-color, #333); transition: all 0.2s;">Cancel</button>
-            <button id="confirm-ok-btn" style="background: #d9534f; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer; box-shadow: 0 4px 8px rgba(217,83,79,0.3); transition: all 0.2s;">Delete</button>
-        </div>
-    `;
+            <div style="font-size: 58px; margin-bottom: 12px;">⚠️</div>
+            <h3 style="font-size: 24px; font-weight: 600; margin-bottom: 12px;">Are you sure?</h3>
+            <p style="font-size: 16px; color: var(--secondary-text, #555); margin-bottom: 28px; line-height: 1.5;">${message}</p>
+            <div style="display: flex; gap: 15px; justify-content: center;">
+                <button id="confirm-cancel-btn" style="background: transparent; border: 2px solid var(--pink, #F8BBD0); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer; color: var(--text-color, #333); transition: all 0.2s;">Cancel</button>
+                <button id="confirm-ok-btn" style="background: #d9534f; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer; box-shadow: 0 4px 8px rgba(217,83,79,0.3); transition: all 0.2s;">Delete</button>
+            </div>
+        `;
 
         overlay.appendChild(popup);
         document.body.appendChild(overlay);
 
-        // ظهور الأنيميشن
         setTimeout(() => {
             overlay.style.opacity = '1';
             popup.style.transform = 'scale(1)';
         }, 10);
 
-        // إزالة البوب أب
         function closePopup() {
             overlay.style.opacity = '0';
             popup.style.transform = 'scale(0.9)';
@@ -492,19 +561,14 @@ $recent_orders = array_slice($user_orders, 0, 5, true);
             }, 250);
         }
 
-        // دالة عرض رسالة النجاح (toast منتصف الصفحة)
         function showSuccessToast() {
             const toast = document.createElement('div');
-            toast.id = 'admin-success-toast';
             toast.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 12px;">
-
-                <div>
-                    <strong style="font-size: 18px;">Removed from the system!</strong>
-
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <i class="fa-solid fa-check-circle" style="font-size: 28px; color: #28a745;"></i>
+                    <div><strong style="font-size: 18px;">User removed successfully!</strong></div>
                 </div>
-            </div>
-        `;
+            `;
             toast.style.position = 'fixed';
             toast.style.top = '50%';
             toast.style.left = '50%';
@@ -516,17 +580,13 @@ $recent_orders = array_slice($user_orders, 0, 5, true);
             toast.style.boxShadow = '0 20px 35px rgba(0,0,0,0.2)';
             toast.style.zIndex = '10000';
             toast.style.fontFamily = "'Poppins', sans-serif";
-            toast.style.borderRight = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderLeft = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderTop = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderBottom = '4px solid var(--pink, #F8BBD0)';
+            toast.style.border = '2px solid #28a745';
             toast.style.backdropFilter = 'blur(12px)';
             toast.style.opacity = '0';
             toast.style.transition = 'all 0.25s cubic-bezier(0.34, 1.2, 0.64, 1)';
             toast.style.fontWeight = '500';
             toast.style.textAlign = 'center';
             toast.style.minWidth = '280px';
-            toast.style.boxSizing = 'border-box';
 
             document.body.appendChild(toast);
 
@@ -535,7 +595,6 @@ $recent_orders = array_slice($user_orders, 0, 5, true);
                 toast.style.transform = 'translate(-50%, -50%) scale(1)';
             }, 20);
 
-            // إخفاء الرسالة بعد 2.5 ثانية
             setTimeout(() => {
                 toast.style.opacity = '0';
                 toast.style.transform = 'translate(-50%, -50%) scale(0.95)';
@@ -545,7 +604,6 @@ $recent_orders = array_slice($user_orders, 0, 5, true);
             }, 2500);
         }
 
-        // أحداث الأزرار
         const cancelBtn = popup.querySelector('#confirm-cancel-btn');
         const confirmBtn = popup.querySelector('#confirm-ok-btn');
 
@@ -553,23 +611,85 @@ $recent_orders = array_slice($user_orders, 0, 5, true);
             closePopup();
         });
 
-        confirmBtn.addEventListener('click', () => {
-            // ✅ بدون حذف فعلي – فقط استدعاء callback إذا أردت تنفيذ شيء لاحقاً (مثل تحديث واجهة)
+        confirmBtn.addEventListener('click', async () => {
             if (onConfirm && typeof onConfirm === 'function') {
-                onConfirm();  // هون بتقدر تعمل أي شيء زي تحديث UI بدون حذف حقيقي
+                await onConfirm();
             }
             closePopup();
-            // عرض رسالة النجاح الجميلة في منتصف الصفحة
             showSuccessToast();
+            setTimeout(() => {
+                window.location.href = 'users.php';
+            }, 1500);
         });
 
-        // إغلاق عند الضغط على overlay
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) closePopup();
         });
     }
+
+    async function deleteUserFromDB(userId) {
+        try {
+            const response = await fetch('delete-user.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: 'user_id=' + userId
+            });
+            const result = await response.json();
+            return result.success;
+        } catch (error) {
+            console.error('Error:', error);
+            return false;
+        }
+    }
+
     function deleteUser(id, name) {
-       showAdminConfirm('Are you sure you want to delete this user?', () => {})
+        showAdminConfirm(`Are you sure you want to delete user "${name}"? This action cannot be undone.`, async () => {
+            const success = await deleteUserFromDB(id);
+            if (!success) {
+                const errorToast = document.createElement('div');
+                errorToast.innerHTML = `
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <i class="fa-solid fa-exclamation-triangle" style="font-size: 28px; color: #ff4757;"></i>
+                        <div><strong style="font-size: 18px;">Failed to delete user!</strong></div>
+                    </div>
+                `;
+                errorToast.style.position = 'fixed';
+                errorToast.style.top = '50%';
+                errorToast.style.left = '50%';
+                errorToast.style.transform = 'translate(-50%, -50%) scale(0.9)';
+                errorToast.style.backgroundColor = 'var(--card-bg, #fff)';
+                errorToast.style.color = 'var(--text-color, #333)';
+                errorToast.style.padding = '18px 28px';
+                errorToast.style.borderRadius = '60px';
+                errorToast.style.boxShadow = '0 20px 35px rgba(0,0,0,0.2)';
+                errorToast.style.zIndex = '10000';
+                errorToast.style.fontFamily = "'Poppins', sans-serif";
+                errorToast.style.border = '2px solid #ff4757';
+                errorToast.style.backdropFilter = 'blur(12px)';
+                errorToast.style.opacity = '0';
+                errorToast.style.transition = 'all 0.25s ease';
+                errorToast.style.fontWeight = '500';
+                errorToast.style.textAlign = 'center';
+                errorToast.style.minWidth = '280px';
+
+                document.body.appendChild(errorToast);
+
+                setTimeout(() => {
+                    errorToast.style.opacity = '1';
+                    errorToast.style.transform = 'translate(-50%, -50%) scale(1)';
+                }, 20);
+
+                setTimeout(() => {
+                    errorToast.style.opacity = '0';
+                    errorToast.style.transform = 'translate(-50%, -50%) scale(0.95)';
+                    setTimeout(() => {
+                        if (errorToast && errorToast.parentNode) errorToast.remove();
+                    }, 250);
+                }, 2500);
+            }
+        });
     }
 </script>
 

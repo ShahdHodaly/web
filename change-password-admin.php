@@ -1,5 +1,9 @@
 <?php
-session_start(); 
+// change-password-admin.php
+session_start();
+require_once 'db.php';
+
+$pdo = getDB();
 
 // التحقق من تسجيل الدخول
 if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
@@ -7,12 +11,23 @@ if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
     exit;
 }
 
-// مصفوفة المستخدم (بيانات وهمية)
+$user_id = $_SESSION['user_id'];
+
+// جلب بيانات المستخدم من قاعدة البيانات (للاسم فقط للعرض)
+$stmt = $pdo->prepare("SELECT name, password FROM users WHERE user_id = ?");
+$stmt->execute([$user_id]);
+$userData = $stmt->fetch(PDO::FETCH_ASSOC);
+
+if (!$userData) {
+    session_destroy();
+    header("Location: auth.php");
+    exit;
+}
+
 $user = [
-        'id' => 1,
-        'name' => 'Sarah Admin',
-        'email' => 'admin@teddyshop.com',
-        'role' => 'Admin',
+        'id' => $user_id,
+        'name' => $userData['name'],
+        'email' => $_SESSION['user_email'] ?? ''
 ];
 
 $success_message = '';
@@ -24,13 +39,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $new_password = trim($_POST['new_password'] ?? '');
     $confirm_password = trim($_POST['confirm_password'] ?? '');
 
-    // كلمة المرور الحالية (تجريبية - في الحقيقة تستعلم من قاعدة البيانات)
-    $stored_hash = password_hash("Admin123", PASSWORD_DEFAULT);
-    $is_current_valid = password_verify($current_password, $stored_hash);
-
     if (empty($current_password) || empty($new_password) || empty($confirm_password)) {
         $error_message = "All fields are required.";
-    } elseif (!$is_current_valid) {
+    } elseif (!password_verify($current_password, $userData['password'])) {
         $error_message = "Current password is incorrect.";
     } elseif (strlen($new_password) < 8) {
         $error_message = "New password must be at least 8 characters long.";
@@ -38,8 +49,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error_message = "New password must contain at least one uppercase letter and one number.";
     } elseif ($new_password !== $confirm_password) {
         $error_message = "New password and confirmation do not match.";
+    } elseif ($current_password === $new_password) {
+        $error_message = "New password cannot be the same as current password.";
     } else {
-        $success_message = "Password changed successfully!";
+        try {
+            // تشفير كلمة المرور الجديدة
+            $hashed_password = password_hash($new_password, PASSWORD_DEFAULT);
+
+            // تحديث كلمة المرور في قاعدة البيانات
+            $stmt = $pdo->prepare("UPDATE users SET password = ? WHERE user_id = ?");
+            $stmt->execute([$hashed_password, $user_id]);
+
+            $success_message = "Password changed successfully! You will be redirected to login page.";
+
+            // تسجيل الخروج بعد تغيير كلمة المرور (اختياري)
+            // session_destroy();
+            // header("refresh:3; url=auth.php");
+
+        } catch (PDOException $e) {
+            $error_message = "Database error: " . $e->getMessage();
+        }
     }
 }
 ?>
@@ -315,6 +344,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <i class="fa-solid fa-check-circle"></i>
                     <?= htmlspecialchars($success_message) ?>
                 </div>
+            <?php if (strpos($success_message, 'redirected') !== false): ?>
+                <script>
+                    setTimeout(function() {
+                        window.location.href = 'auth.php?logout=1';
+                    }, 3000);
+                </script>
+            <?php endif; ?>
             <?php endif; ?>
 
             <?php if ($error_message): ?>

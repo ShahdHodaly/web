@@ -1,31 +1,93 @@
 <?php
-// product_details.php
+// product_details-admin.php
 session_start();
+require_once 'db.php';
 
-// تضمين مصفوفة المنتجات
-require_once 'products.php';
+$pdo = getDB();
 
 // الحصول على ID المنتج من الرابط
 $product_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
+// جلب المنتج من قاعدة البيانات
+$stmt = $pdo->prepare("
+    SELECT 
+        p.product_id,
+        p.name,
+        p.description,
+        p.price,
+        p.category_id,
+        p.image,
+        p.stock,
+        p.sales_count,
+        p.created_at,
+        p.sale_price,
+        c.name as category_name,
+        c.category_id as cat_id
+    FROM products p
+    JOIN categories c ON p.category_id = c.category_id
+    WHERE p.product_id = ?
+");
+$stmt->execute([$product_id]);
+$productData = $stmt->fetch(PDO::FETCH_ASSOC);
+
 // التحقق من وجود المنتج
-if (!isset($products[$product_id])) {
+if (!$productData) {
     header("Location: product-admin.php");
     exit;
 }
 
-$product = $products[$product_id];
+// جلب التقييمات للمنتج
+$stmt = $pdo->prepare("
+    SELECT 
+        COALESCE(AVG(rating), 0) as avg_rating,
+        COUNT(*) as review_count
+    FROM reviews 
+    WHERE product_id = ? AND status = 'approved'
+");
+$stmt->execute([$product_id]);
+$ratingData = $stmt->fetch(PDO::FETCH_ASSOC);
+
+// تنسيق المنتج للعرض
+$product = [
+        'id' => $productData['product_id'],
+        'name' => $productData['name'],
+        'description' => $productData['description'],
+        'price' => (float)$productData['price'],
+        'category' => $productData['category_name'],
+        'image' => !empty($productData['image']) ? $productData['image'] : 'images/placeholder.png',
+        'stock' => (int)$productData['stock'],
+        'sales_count' => (int)$productData['sales_count'],
+        'avg_rating' => round($ratingData['avg_rating'], 1),
+        'review_count' => (int)$ratingData['review_count'],
+        'created_at' => $productData['created_at'],
+        'sale_price' => $productData['sale_price'] ? (float)$productData['sale_price'] : null
+];
+
 $pageTitle = $product['name'] . " | Teddy Shop";
 
 // جلب منتجات ذات صلة (من نفس التصنيف)
+$stmt = $pdo->prepare("
+    SELECT 
+        p.product_id as id,
+        p.name,
+        p.price,
+        p.image
+    FROM products p
+    WHERE p.category_id = ? AND p.product_id != ?
+    ORDER BY RANDOM()
+    LIMIT 4
+");
+$stmt->execute([$productData['category_id'], $product_id]);
+$relatedProductsData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
 $related_products = [];
-foreach ($products as $id => $item) {
-    if ($id != $product_id && $item['category'] == $product['category']) {
-        $related_products[$id] = $item;
-    }
+foreach ($relatedProductsData as $item) {
+    $related_products[$item['id']] = [
+            'name' => $item['name'],
+            'price' => (float)$item['price'],
+            'image' => !empty($item['image']) ? $item['image'] : 'images/placeholder.png'
+    ];
 }
-// أخذ أول 4 منتجات فقط
-$related_products = array_slice($related_products, 0, 4, true);
 ?>
 
 <!DOCTYPE html>
@@ -308,7 +370,7 @@ $related_products = array_slice($related_products, 0, 4, true);
             <div class="product-layout">
                 <!-- Image Section -->
                 <div class="product-image-section">
-                    <img src="<?= htmlspecialchars($product['image']) ?>" alt="<?= htmlspecialchars($product['name']) ?>" class="product-image">
+                    <img src="<?= htmlspecialchars($product['image']) ?>" alt="<?= htmlspecialchars($product['name']) ?>" class="product-image" onerror="this.src='images/placeholder.png'">
                 </div>
 
                 <!-- Info Section -->
@@ -323,52 +385,83 @@ $related_products = array_slice($related_products, 0, 4, true);
                     <!-- Rating -->
                     <div class="rating-stars">
                         <?php
-                        $rating = $product['avg_rating'] ?? 0;
+                        $rating = $product['avg_rating'];
+                        $fullStars = floor($rating);
+                        $hasHalfStar = ($rating - $fullStars) >= 0.5;
+
                         for($i = 1; $i <= 5; $i++):
-                            ?>
-                            <i class="fa-<?= $i <= $rating ? 'solid' : 'regular' ?> fa-star" style="color: #FFD700;"></i>
-                        <?php endfor; ?>
+                            if ($i <= $fullStars) {
+                                echo '<i class="fa-solid fa-star" style="color: #FFD700;"></i>';
+                            } elseif ($hasHalfStar && $i == $fullStars + 1) {
+                                echo '<i class="fa-solid fa-star-half-alt" style="color: #FFD700;"></i>';
+                            } else {
+                                echo '<i class="fa-regular fa-star" style="color: #FFD700;"></i>';
+                            }
+                        endfor;
+                        ?>
                         <span class="rating-value"><?= number_format($rating, 1) ?></span>
-                        <span style="color: var(--secondary-text);">(<?= $product['sales_count'] ?? 0 ?> reviews)</span>
+                        <span style="color: var(--secondary-text);">(<?= $product['review_count'] ?> reviews)</span>
                     </div>
 
                     <!-- Price -->
                     <div class="product-price">
                         $<?= number_format($product['price'], 2) ?>
+                        <?php if ($product['sale_price'] && $product['sale_price'] < $product['price']): ?>
+                            <span style="font-size: 20px; color: #999; text-decoration: line-through; margin-left: 10px;">
+                                $<?= number_format($product['sale_price'], 2) ?>
+                            </span>
+                        <?php endif; ?>
                     </div>
 
                     <!-- Description -->
                     <div class="product-description">
-                        <?= nl2br(htmlspecialchars($product['description'] ?? 'No description available for this product.')) ?>
+                        <?php
+                        if (!empty($product['description'])) {
+                            echo nl2br(htmlspecialchars($product['description']));
+                        } else {
+                            echo '<em>No description available for this product.</em>';
+                        }
+                        ?>
                     </div>
 
                     <!-- Stats -->
                     <div class="product-stats">
                         <div class="stat-item">
                             <i class="fa-solid fa-chart-line"></i>
-                            <div class="stat-value"><?= number_format($product['sales_count'] ?? 0) ?></div>
-                            <div class="stat-label">Sales</div>
+                            <div class="stat-value"><?= number_format($product['sales_count']) ?></div>
+                            <div class="stat-label">Total Sales</div>
                         </div>
                         <div class="stat-item">
                             <i class="fa-solid fa-star"></i>
-                            <div class="stat-value"><?= number_format($product['avg_rating'] ?? 0, 1) ?></div>
-                            <div class="stat-label">Rating</div>
+                            <div class="stat-value"><?= number_format($product['avg_rating'], 1) ?></div>
+                            <div class="stat-label">Average Rating</div>
                         </div>
                         <div class="stat-item">
                             <i class="fa-solid fa-calendar"></i>
-                            <div class="stat-value"><?= date('M d, Y', strtotime($product['created_at'] ?? 'now')) ?></div>
-                            <div class="stat-label">Added</div>
+                            <div class="stat-value"><?= date('M d, Y', strtotime($product['created_at'])) ?></div>
+                            <div class="stat-label">Date Added</div>
                         </div>
                     </div>
 
                     <!-- Stock Status -->
                     <?php
-                    $stock = $product['stock'] ?? 0;
-                    $stockClass = $stock > 10 ? 'stock-in' : ($stock > 0 ? 'stock-low' : 'stock-out');
-                    $stockText = $stock > 10 ? 'In Stock' : ($stock > 0 ? 'Low Stock (' . $stock . ' left)' : 'Out of Stock');
+                    $stock = $product['stock'];
+                    if ($stock > 10) {
+                        $stockClass = 'stock-in';
+                        $stockIcon = 'check-circle';
+                        $stockText = 'In Stock (' . $stock . ' units)';
+                    } elseif ($stock > 0) {
+                        $stockClass = 'stock-low';
+                        $stockIcon = 'exclamation-triangle';
+                        $stockText = 'Low Stock (' . $stock . ' left)';
+                    } else {
+                        $stockClass = 'stock-out';
+                        $stockIcon = 'times-circle';
+                        $stockText = 'Out of Stock';
+                    }
                     ?>
                     <div class="stock-badge <?= $stockClass ?>">
-                        <i class="fa-solid fa-<?= $stock > 10 ? 'check-circle' : ($stock > 0 ? 'exclamation-triangle' : 'times-circle') ?>"></i>
+                        <i class="fa-solid fa-<?= $stockIcon ?>"></i>
                         <?= $stockText ?>
                     </div>
 
@@ -392,12 +485,12 @@ $related_products = array_slice($related_products, 0, 4, true);
                 <div class="related-section">
                     <div class="section-title">
                         <i class="fa-solid fa-arrow-right"></i>
-                       Related Product
+                        Related Products
                     </div>
                     <div class="related-grid">
                         <?php foreach($related_products as $id => $item): ?>
                             <a href="product_details-admin.php?id=<?= $id ?>" class="related-card">
-                                <img src="<?= htmlspecialchars($item['image']) ?>" alt="<?= htmlspecialchars($item['name']) ?>" class="related-img">
+                                <img src="<?= htmlspecialchars($item['image']) ?>" alt="<?= htmlspecialchars($item['name']) ?>" class="related-img" onerror="this.src='images/placeholder.png'">
                                 <div class="related-info">
                                     <div class="related-name"><?= htmlspecialchars($item['name']) ?></div>
                                     <div class="related-price">$<?= number_format($item['price'], 2) ?></div>
@@ -411,11 +504,27 @@ $related_products = array_slice($related_products, 0, 4, true);
     </main>
 </div>
 
-
 <script>
+    // دالة حذف المنتج مع الاتصال بقاعدة البيانات
+    async function deleteProductFromDB(productId) {
+        try {
+            const response = await fetch('delete-product.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: 'product_id=' + productId
+            });
+            const result = await response.json();
+            return result.success;
+        } catch (error) {
+            console.error('Error:', error);
+            return false;
+        }
+    }
 
     function showAdminConfirm(message, onConfirm) {
-        // 1. إنشاء overlay الخلفية
+        // إنشاء overlay الخلفية
         const overlay = document.createElement('div');
         overlay.id = 'admin-confirm-overlay';
         overlay.style.position = 'fixed';
@@ -432,7 +541,7 @@ $related_products = array_slice($related_products, 0, 4, true);
         overlay.style.opacity = '0';
         overlay.style.transition = 'opacity 0.3s ease';
 
-        // 2. إنشاء نافذة الـ Popup
+        // إنشاء نافذة الـ Popup
         const popup = document.createElement('div');
         popup.id = 'admin-confirm-popup';
         popup.style.backgroundColor = 'var(--card-bg, #ffffff)';
@@ -450,14 +559,14 @@ $related_products = array_slice($related_products, 0, 4, true);
 
         // محتوى البوب أب
         popup.innerHTML = `
-        <div style="font-size: 58px; margin-bottom: 12px;">⚠️</div>
-        <h3 style="font-size: 24px; font-weight: 600; margin-bottom: 12px;">Are you sure?</h3>
-        <p style="font-size: 16px; color: var(--secondary-text, #555); margin-bottom: 28px; line-height: 1.5;">${message}</p>
-        <div style="display: flex; gap: 15px; justify-content: center;">
-            <button id="confirm-cancel-btn" style="background: transparent; border: 2px solid var(--pink, #F8BBD0); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer; color: var(--text-color, #333); transition: all 0.2s;">Cancel</button>
-            <button id="confirm-ok-btn" style="background: #d9534f; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer; box-shadow: 0 4px 8px rgba(217,83,79,0.3); transition: all 0.2s;">Delete</button>
-        </div>
-    `;
+            <div style="font-size: 58px; margin-bottom: 12px;">⚠️</div>
+            <h3 style="font-size: 24px; font-weight: 600; margin-bottom: 12px;">Are you sure?</h3>
+            <p style="font-size: 16px; color: var(--secondary-text, #555); margin-bottom: 28px; line-height: 1.5;">${message}</p>
+            <div style="display: flex; gap: 15px; justify-content: center;">
+                <button id="confirm-cancel-btn" style="background: transparent; border: 2px solid var(--pink, #F8BBD0); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer; color: var(--text-color, #333); transition: all 0.2s;">Cancel</button>
+                <button id="confirm-ok-btn" style="background: #d9534f; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer; box-shadow: 0 4px 8px rgba(217,83,79,0.3); transition: all 0.2s;">Delete</button>
+            </div>
+        `;
 
         overlay.appendChild(popup);
         document.body.appendChild(overlay);
@@ -477,19 +586,17 @@ $related_products = array_slice($related_products, 0, 4, true);
             }, 250);
         }
 
-        // دالة عرض رسالة النجاح (toast منتصف الصفحة)
-        function showSuccessToast() {
+        // دالة عرض رسالة النجاح
+        function showSuccessToast(message = 'Product deleted successfully!') {
             const toast = document.createElement('div');
-            toast.id = 'admin-success-toast';
             toast.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 12px;">
-
-                <div>
-                    <strong style="font-size: 18px;">Removed from the system!</strong>
-
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <i class="fa-solid fa-check-circle" style="font-size: 28px; color: #28a745;"></i>
+                    <div>
+                        <strong style="font-size: 18px;">${message}</strong>
+                    </div>
                 </div>
-            </div>
-        `;
+            `;
             toast.style.position = 'fixed';
             toast.style.top = '50%';
             toast.style.left = '50%';
@@ -501,17 +608,13 @@ $related_products = array_slice($related_products, 0, 4, true);
             toast.style.boxShadow = '0 20px 35px rgba(0,0,0,0.2)';
             toast.style.zIndex = '10000';
             toast.style.fontFamily = "'Poppins', sans-serif";
-            toast.style.borderRight = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderLeft = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderTop = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderBottom = '4px solid var(--pink, #F8BBD0)';
+            toast.style.border = '2px solid #28a745';
             toast.style.backdropFilter = 'blur(12px)';
             toast.style.opacity = '0';
             toast.style.transition = 'all 0.25s cubic-bezier(0.34, 1.2, 0.64, 1)';
             toast.style.fontWeight = '500';
             toast.style.textAlign = 'center';
             toast.style.minWidth = '280px';
-            toast.style.boxSizing = 'border-box';
 
             document.body.appendChild(toast);
 
@@ -520,7 +623,6 @@ $related_products = array_slice($related_products, 0, 4, true);
                 toast.style.transform = 'translate(-50%, -50%) scale(1)';
             }, 20);
 
-            // إخفاء الرسالة بعد 2.5 ثانية
             setTimeout(() => {
                 toast.style.opacity = '0';
                 toast.style.transform = 'translate(-50%, -50%) scale(0.95)';
@@ -538,14 +640,17 @@ $related_products = array_slice($related_products, 0, 4, true);
             closePopup();
         });
 
-        confirmBtn.addEventListener('click', () => {
-            // ✅ بدون حذف فعلي – فقط استدعاء callback إذا أردت تنفيذ شيء لاحقاً (مثل تحديث واجهة)
+        confirmBtn.addEventListener('click', async () => {
             if (onConfirm && typeof onConfirm === 'function') {
-                onConfirm();  // هون بتقدر تعمل أي شيء زي تحديث UI بدون حذف حقيقي
+                await onConfirm();
             }
             closePopup();
-            // عرض رسالة النجاح الجميلة في منتصف الصفحة
             showSuccessToast();
+
+            // توجيه المستخدم إلى صفحة المنتجات بعد ثانية ونصف
+            setTimeout(() => {
+                window.location.href = 'product-admin.php';
+            }, 1500);
         });
 
         // إغلاق عند الضغط على overlay
@@ -553,10 +658,57 @@ $related_products = array_slice($related_products, 0, 4, true);
             if (e.target === overlay) closePopup();
         });
     }
-    // Delete product function
+
+    // Delete product function مع الحذف الفعلي من قاعدة البيانات
     function deleteProduct(id) {
-        showAdminConfirm('Are you sure you want to delete this product?', () => {
-        })
+        showAdminConfirm('Are you sure you want to delete this product?', async () => {
+            const success = await deleteProductFromDB(id);
+            if (!success) {
+                // عرض رسالة خطأ إذا فشل الحذف
+                const errorToast = document.createElement('div');
+                errorToast.innerHTML = `
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <i class="fa-solid fa-exclamation-triangle" style="font-size: 28px; color: #ff4757;"></i>
+                        <div>
+                            <strong style="font-size: 18px;">Failed to delete product!</strong>
+                        </div>
+                    </div>
+                `;
+                errorToast.style.position = 'fixed';
+                errorToast.style.top = '50%';
+                errorToast.style.left = '50%';
+                errorToast.style.transform = 'translate(-50%, -50%) scale(0.9)';
+                errorToast.style.backgroundColor = 'var(--card-bg, #fff)';
+                errorToast.style.color = 'var(--text-color, #333)';
+                errorToast.style.padding = '18px 28px';
+                errorToast.style.borderRadius = '60px';
+                errorToast.style.boxShadow = '0 20px 35px rgba(0,0,0,0.2)';
+                errorToast.style.zIndex = '10000';
+                errorToast.style.fontFamily = "'Poppins', sans-serif";
+                errorToast.style.border = '2px solid #ff4757';
+                errorToast.style.backdropFilter = 'blur(12px)';
+                errorToast.style.opacity = '0';
+                errorToast.style.transition = 'all 0.25s ease';
+                errorToast.style.fontWeight = '500';
+                errorToast.style.textAlign = 'center';
+                errorToast.style.minWidth = '280px';
+
+                document.body.appendChild(errorToast);
+
+                setTimeout(() => {
+                    errorToast.style.opacity = '1';
+                    errorToast.style.transform = 'translate(-50%, -50%) scale(1)';
+                }, 20);
+
+                setTimeout(() => {
+                    errorToast.style.opacity = '0';
+                    errorToast.style.transform = 'translate(-50%, -50%) scale(0.95)';
+                    setTimeout(() => {
+                        if (errorToast && errorToast.parentNode) errorToast.remove();
+                    }, 250);
+                }, 2500);
+            }
+        });
     }
 
     // Dark mode script

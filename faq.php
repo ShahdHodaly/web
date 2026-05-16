@@ -1,4 +1,5 @@
 <?php
+session_start();
 $pageTitle = "FAQ | Teddy Lap";
 include 'products.php';
 ?>

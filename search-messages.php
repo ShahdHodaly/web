@@ -1,77 +1,99 @@
 <?php
 // search-messages.php
 session_start();
+require_once 'db.php';
 
-// تضمين مصفوفة الرسائل
-require_once 'messages-array.php';
-
+$pdo = getDB();
 
 // معالجة البحث
 $query = isset($_GET['q']) ? trim($_GET['q']) : '';
 $date_from = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
 $date_to = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
-$status = isset($_GET['status']) ? trim($_GET['status']) : '';
-$priority = isset($_GET['priority']) ? trim($_GET['priority']) : '';
 $results = [];
 $totalResults = 0;
 
-// منطق البحث
-if ((!empty($query) || !empty($date_from) || !empty($date_to) || !empty($status) || !empty($priority)) && isset($messages)) {
-    foreach ($messages as $id => $message) {
-        $match = true;
+// بناء استعلام البحث
+$sql = "
+    SELECT 
+        m.message_id as id,
+        m.sender_name,
+        m.sender_email,
+        m.subject,
+        m.message,
+        m.priority,
+        m.status,
+        m.created_at as date
+    FROM messages m
+    WHERE 1=1
+";
 
-        // البحث بالنص
-        if (!empty($query)) {
-            if (
-                stripos($message['sender_name'], $query) === false &&
-                stripos($message['sender_email'], $query) === false &&
-                stripos($message['subject'], $query) === false &&
-                stripos($message['message'], $query) === false
-            ) {
-                $match = false;
-            }
-        }
+$params = [];
+$paramIndex = 1;
 
-        // فلترة حسب الحالة
-        if ($match && !empty($status) && $message['status'] !== $status) {
-            $match = false;
-        }
+// التحقق من وجود معايير بحث
+$hasCriteria = !empty($query) || !empty($date_from) || !empty($date_to);
 
-        // فلترة حسب الأولوية
-        if ($match && !empty($priority) && $message['priority'] !== $priority) {
-            $match = false;
-        }
+if ($hasCriteria) {
 
-        // فلترة حسب التاريخ
-        if ($match && (!empty($date_from) || !empty($date_to))) {
-            $message_date = strtotime($message['date']);
-
-            if (!empty($date_from)) {
-                $from_date = strtotime($date_from);
-                if ($message_date < $from_date) {
-                    $match = false;
-                }
-            }
-
-            if ($match && !empty($date_to)) {
-                $to_date = strtotime($date_to . ' 23:59:59');
-                if ($message_date > $to_date) {
-                    $match = false;
-                }
-            }
-        }
-
-        if ($match) {
-            $results[$id] = $message;
-        }
+    // إضافة شرط البحث النصي
+    if (!empty($query)) {
+        $sql .= " AND (
+            m.sender_name ILIKE $" . $paramIndex . " OR 
+            m.sender_email ILIKE $" . $paramIndex . " OR 
+            m.subject ILIKE $" . $paramIndex . " OR 
+            m.message ILIKE $" . $paramIndex . "
+        )";
+        $params[] = '%' . $query . '%';
+        $paramIndex++;
     }
-    $totalResults = count($results);
+
+    // إضافة شرط التاريخ من
+    if (!empty($date_from)) {
+        $sql .= " AND DATE(m.created_at) >= $" . $paramIndex;
+        $params[] = $date_from;
+        $paramIndex++;
+    }
+
+    // إضافة شرط التاريخ إلى
+    if (!empty($date_to)) {
+        $sql .= " AND DATE(m.created_at) <= $" . $paramIndex;
+        $params[] = $date_to;
+        $paramIndex++;
+    }
+
+    // ترتيب النتائج من الأحدث إلى الأقدم
+    $sql .= " ORDER BY m.created_at DESC";
+
+    try {
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $messagesData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // تنسيق النتائج
+        foreach ($messagesData as $message) {
+            $results[$message['id']] = [
+                    'sender_name' => $message['sender_name'],
+                    'sender_email' => $message['sender_email'],
+                    'sender_avatar' => 'https://ui-avatars.com/api/?name=' . urlencode($message['sender_name']) . '&background=F8BBD0&color=000&size=45',
+                    'subject' => $message['subject'],
+                    'message' => $message['message'],
+                    'priority' => $message['priority'],
+                    'date' => $message['date'],
+                    'status' => $message['status']
+            ];
+        }
+
+        $totalResults = count($results);
+    } catch (PDOException $e) {
+        error_log("Search error: " . $e->getMessage());
+        $totalResults = 0;
+    }
 }
 
 // Pagination للنتائج
 $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
 $perPage = 5;
-$totalPages = ceil($totalResults / $perPage);
+$totalPages = $totalResults > 0 ? ceil($totalResults / $perPage) : 1;
 $offset = ($page - 1) * $perPage;
 $paginatedResults = array_slice($results, $offset, $perPage, true);
 ?>
@@ -96,7 +118,6 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
         .admin-wrapper { display: flex; min-height: 100vh; }
         .admin-main { flex: 1; width: calc(100% - 280px); padding: 30px 35px; background-color: var(--bg-color); overflow-y: auto; box-sizing: border-box; }
 
-        /* Search Section */
         .search-section {
             background: var(--card-bg);
             border-radius: 30px;
@@ -134,8 +155,7 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             color: var(--secondary-text);
             margin-bottom: 8px;
         }
-        .search-input-group input,
-        .search-input-group select {
+        .search-input-group input {
             width: 100%;
             padding: 14px 18px;
             background: var(--bg-color);
@@ -146,8 +166,7 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             transition: all 0.3s ease;
             outline: none;
         }
-        .search-input-group input:focus,
-        .search-input-group select:focus {
+        .search-input-group input:focus {
             border-color: var(--pink);
             box-shadow: 0 5px 15px var(--shadow);
         }
@@ -156,10 +175,27 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             flex: 1;
             min-width: 180px;
         }
-
-        .filter-group {
-            flex: 1;
-            min-width: 150px;
+        .date-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--secondary-text);
+            margin-bottom: 8px;
+        }
+        .date-group input {
+            width: 100%;
+            padding: 14px 18px;
+            background: var(--bg-color);
+            border: 2px solid transparent;
+            border-radius: 50px;
+            color: var(--text-color);
+            font-size: 14px;
+            transition: all 0.3s ease;
+            outline: none;
+        }
+        .date-group input:focus {
+            border-color: var(--pink);
+            box-shadow: 0 5px 15px var(--shadow);
         }
 
         .search-btn {
@@ -191,7 +227,6 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             border-color: #ff6b6b;
         }
 
-        /* Results Header */
         .results-header {
             display: flex;
             justify-content: space-between;
@@ -209,7 +244,6 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             font-size: 20px;
         }
 
-        /* Table */
         .table-container {
             background: var(--card-bg);
             padding: 25px;
@@ -317,7 +351,6 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             transform: translateY(-2px) scale(1.1);
         }
 
-        /* Pagination */
         .pagination-section {
             display: flex;
             justify-content: space-between;
@@ -352,8 +385,12 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             color: white;
             transform: scale(1.1);
         }
+        .page-item.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
 
-        /* No Results */
         .no-results {
             text-align: center;
             padding: 60px 20px;
@@ -370,6 +407,27 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
             font-size: 24px;
             color: var(--text-color);
             margin-bottom: 10px;
+        }
+
+        .suggestions {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .suggestion-chip {
+            padding: 8px 20px;
+            background: var(--lavender);
+            border-radius: 50px;
+            color: #000;
+            text-decoration: none;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+        .suggestion-chip:hover {
+            background: var(--pink);
+            transform: translateY(-2px);
         }
 
         @keyframes fadeInUp {
@@ -415,7 +473,6 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
                         <label><i class="fa-regular fa-calendar"></i> To Date</label>
                         <input type="date" name="date_to" value="<?= htmlspecialchars($date_to) ?>">
                     </div>
-
                     <button type="submit" class="search-btn">
                         <i class="fa-solid fa-search"></i> Search
                     </button>
@@ -427,7 +484,7 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
         </div>
 
         <!-- Results -->
-        <?php if (!empty($query) || !empty($date_from) || !empty($date_to) || !empty($status) || !empty($priority)): ?>
+        <?php if (!empty($query) || !empty($date_from) || !empty($date_to)): ?>
 
             <!-- Results Header -->
             <div class="results-header">
@@ -435,6 +492,13 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
                     Found <strong><?= $totalResults ?></strong> message<?= $totalResults != 1 ? 's' : '' ?>
                     <?php if (!empty($query)): ?>
                         for "<strong><?= htmlspecialchars($query) ?></strong>"
+                    <?php endif; ?>
+                    <?php if (!empty($date_from) && !empty($date_to)): ?>
+                        between <strong><?= date('M d, Y', strtotime($date_from)) ?></strong> and <strong><?= date('M d, Y', strtotime($date_to)) ?></strong>
+                    <?php elseif (!empty($date_from)): ?>
+                        from <strong><?= date('M d, Y', strtotime($date_from)) ?></strong>
+                    <?php elseif (!empty($date_to)): ?>
+                        until <strong><?= date('M d, Y', strtotime($date_to)) ?></strong>
                     <?php endif; ?>
                 </div>
                 <a href="messages.php" class="filter-chip" style="padding: 8px 20px; background: var(--lavender); border-radius: 50px; color: #000; text-decoration: none;">
@@ -458,57 +522,54 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
                         </thead>
                         <tbody>
                         <?php foreach($paginatedResults as $id => $message): ?>
-                        <tr>
-                            <td style="min-width: 200px;">
-                                <div class="sender-info">
-                                    <div class="sender-avatar">
-                                        <img src="<?= $message['sender_avatar'] ?>" alt="<?= $message['sender_name'] ?>">
+                            <tr>
+                                <td style="min-width: 200px;">
+                                    <div class="sender-info">
+                                        <div class="sender-avatar">
+                                            <img src="<?= htmlspecialchars($message['sender_avatar']) ?>" alt="<?= htmlspecialchars($message['sender_name']) ?>" onerror="this.src='images/default-avatar.png'">
+                                        </div>
+                                        <div>
+                                            <div style="font-weight: 600;"><?= htmlspecialchars($message['sender_name']) ?></div>
+                                            <div style="font-size: 11px; color: var(--secondary-text);"><?= htmlspecialchars($message['sender_email']) ?></div>
+                                        </div>
                                     </div>
-                                    <div>
-                                        <div style="font-weight: 600;"><?= htmlspecialchars($message['sender_name']) ?></div>
-                                        <div style="font-size: 11px; color: var(--secondary-text);"><?= htmlspecialchars($message['sender_email']) ?></div>
+                                </td>
+                                <td style="max-width: 180px;">
+                                    <div class="message-subject"><?= htmlspecialchars($message['subject']) ?></div>
+                                </td>
+                                <td style="max-width: 280px;">
+                                    <div class="message-preview" title="<?= htmlspecialchars($message['message']) ?>">
+                                        <?= htmlspecialchars(substr($message['message'], 0, 70)) ?><?= strlen($message['message']) > 70 ? '...' : '' ?>
                                     </div>
-                                </div>
-                            </td>
-                            <td style="max-width: 180px;">
-                                <div class="message-subject"><?= htmlspecialchars($message['subject']) ?></div>
-                            </td>
-                            <td style="max-width: 280px;">
-                                <div class="message-preview" title="<?= htmlspecialchars($message['message']) ?>">
-                                    <?= htmlspecialchars(substr($message['message'], 0, 70)) ?>...
-                                </div>
-                            </td>
-                            <td style="text-align: center;">
-                                    <span class="priority-badge priority-<?= $message['priority'] ?>">
-                                        <?= ucfirst($message['priority']) ?>
-                                    </span>
-                            </td>
-                            <td style="white-space: nowrap;">
-                                <?= date('M d, Y', strtotime($message['date'])) ?>
-                                <div style="font-size: 11px; color: var(--secondary-text);"><?= date('h:i A', strtotime($message['date'])) ?></div>
-                            </td>
-                            <td style="text-align: center;">
-                                    <span class="status-badge status-<?= $message['status'] ?>">
-                                        <?= ucfirst($message['status']) ?>
-                                    </span>
-                            </td>
-                            <td style="text-align: center;">
-                                <div class="action-buttons">
-                                    <button class="action-btn view" onclick="viewMessage(<?= $id ?>)" title="View">
-                                        <i class="fa-solid fa-eye"></i>
-                                    </button>
-                                    <button class="action-btn reply" onclick="replyMessage(<?= $id ?>)" title="Reply">
-                                        <i class="fa-solid fa-reply"></i>
-                                    </button>
-                                    <button class="action-btn delete" onclick="deleteMessage(<?= $id ?>)" title="Delete">
-                                        <i class="fa-solid fa-trash"></i>
-                                    </button>
-                                </div>
-                            </td>
-
-                            <?php endforeach; ?>
+                                </td>
+                                <td style="text-align: center;">
+                                <span class="priority-badge priority-<?= $message['priority'] ?>">
+                                    <?= ucfirst($message['priority']) ?>
+                                </span>
+                                </td>
+                                <td style="white-space: nowrap;">
+                                    <?= date('M d, Y', strtotime($message['date'])) ?>
+                                    <div style="font-size: 11px; color: var(--secondary-text);"><?= date('h:i A', strtotime($message['date'])) ?></div>
+                                </td>
+                                <td style="text-align: center;">
+                                <span class="status-badge status-<?= $message['status'] ?>">
+                                    <?= ucfirst($message['status']) ?>
+                                </span>
+                                </td>
+                                <td style="text-align: center;">
+                                    <div class="action-buttons">
+                                        <button class="action-btn view" onclick="viewMessage(<?= $id ?>)" title="View">
+                                            <i class="fa-solid fa-eye"></i>
+                                        </button>
+                                        <button class="action-btn delete" onclick="deleteMessage(<?= $id ?>)" title="Delete">
+                                            <i class="fa-solid fa-trash"></i>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
                         </tbody>
-
+                    </table>
                 </div>
 
                 <!-- Pagination -->
@@ -519,17 +580,40 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
                         </div>
                         <div class="pagination">
                             <?php if ($page > 1): ?>
-                                <a href="?q=<?= urlencode($query) ?>&date_from=<?= urlencode($date_from) ?>&date_to=<?= urlencode($date_to) ?>&status=<?= urlencode($status) ?>&priority=<?= urlencode($priority) ?>&page=<?= $page - 1 ?>" class="page-item"><i class="fa-solid fa-chevron-left"></i></a>
+                                <a href="?q=<?= urlencode($query) ?>&date_from=<?= urlencode($date_from) ?>&date_to=<?= urlencode($date_to) ?>&page=<?= $page - 1 ?>" class="page-item">
+                                    <i class="fa-solid fa-chevron-left"></i>
+                                </a>
                             <?php else: ?>
                                 <span class="page-item disabled"><i class="fa-solid fa-chevron-left"></i></span>
                             <?php endif; ?>
 
-                            <?php for($i = 1; $i <= $totalPages; $i++): ?>
-                                <a href="?q=<?= urlencode($query) ?>&date_from=<?= urlencode($date_from) ?>&date_to=<?= urlencode($date_to) ?>&status=<?= urlencode($status) ?>&priority=<?= urlencode($priority) ?>&page=<?= $i ?>" class="page-item <?= $i == $page ? 'active' : '' ?>"><?= $i ?></a>
+                            <?php
+                            $startPage = max(1, $page - 2);
+                            $endPage = min($totalPages, $page + 2);
+
+                            if ($startPage > 1): ?>
+                                <a href="?q=<?= urlencode($query) ?>&date_from=<?= urlencode($date_from) ?>&date_to=<?= urlencode($date_to) ?>&page=1" class="page-item">1</a>
+                                <?php if ($startPage > 2): ?>
+                                    <span class="page-item disabled">...</span>
+                                <?php endif; ?>
+                            <?php endif; ?>
+
+                            <?php for($i = $startPage; $i <= $endPage; $i++): ?>
+                                <a href="?q=<?= urlencode($query) ?>&date_from=<?= urlencode($date_from) ?>&date_to=<?= urlencode($date_to) ?>&page=<?= $i ?>"
+                                   class="page-item <?= $i == $page ? 'active' : '' ?>"><?= $i ?></a>
                             <?php endfor; ?>
 
+                            <?php if ($endPage < $totalPages): ?>
+                                <?php if ($endPage < $totalPages - 1): ?>
+                                    <span class="page-item disabled">...</span>
+                                <?php endif; ?>
+                                <a href="?q=<?= urlencode($query) ?>&date_from=<?= urlencode($date_from) ?>&date_to=<?= urlencode($date_to) ?>&page=<?= $totalPages ?>" class="page-item"><?= $totalPages ?></a>
+                            <?php endif; ?>
+
                             <?php if ($page < $totalPages): ?>
-                                <a href="?q=<?= urlencode($query) ?>&date_from=<?= urlencode($date_from) ?>&date_to=<?= urlencode($date_to) ?>&status=<?= urlencode($status) ?>&priority=<?= urlencode($priority) ?>&page=<?= $page + 1 ?>" class="page-item"><i class="fa-solid fa-chevron-right"></i></a>
+                                <a href="?q=<?= urlencode($query) ?>&date_from=<?= urlencode($date_from) ?>&date_to=<?= urlencode($date_to) ?>&page=<?= $page + 1 ?>" class="page-item">
+                                    <i class="fa-solid fa-chevron-right"></i>
+                                </a>
                             <?php else: ?>
                                 <span class="page-item disabled"><i class="fa-solid fa-chevron-right"></i></span>
                             <?php endif; ?>
@@ -544,8 +628,34 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
                     <p style="color: var(--secondary-text); margin-top: 10px;">
                         Try different search terms or clear filters
                     </p>
+                    <div class="suggestions">
+                        <a href="messages.php" class="suggestion-chip">
+                            <i class="fa-solid fa-eye"></i> View All Messages
+                        </a>
+                        <a href="?q=customer" class="suggestion-chip">
+                            <i class="fa-solid fa-user"></i> Search "customer"
+                        </a>
+                        <a href="?q=order" class="suggestion-chip">
+                            <i class="fa-solid fa-shopping-cart"></i> Search "order"
+                        </a>
+                    </div>
                 </div>
             <?php endif; ?>
+
+        <?php else: ?>
+            <!-- No search criteria entered -->
+            <div class="no-results">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <h3>Enter search criteria</h3>
+                <p style="color: var(--secondary-text); margin-top: 10px;">
+                    Please enter a search term or select a date range to search.
+                </p>
+                <div class="suggestions">
+                    <a href="messages.php" class="suggestion-chip">
+                        <i class="fa-solid fa-eye"></i> View All Messages
+                    </a>
+                </div>
+            </div>
         <?php endif; ?>
     </main>
 </div>
@@ -555,13 +665,9 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
         window.location.href = 'message-details.php?id=' + id;
     }
 
-    function replyMessage(id) {
-        window.location.href = 'compose-message.php?reply=' + id;
-    }
-
     function deleteMessage(id) {
-        if(confirm('Are you sure you want to delete this message?')) {
-            alert('Message deleted (Demo)');
+        if(confirm('Are you sure you want to delete this message? This action cannot be undone.')) {
+            window.location.href = 'delete-message.php?id=' + id;
         }
     }
 
@@ -587,15 +693,17 @@ $paginatedResults = array_slice($results, $offset, $perPage, true);
         });
     });
 
-    // Select effects
-    const selectInputs = document.querySelectorAll('select');
-    selectInputs.forEach(select => {
-        select.addEventListener('focus', function() {
-            this.style.transform = 'translateY(-2px)';
-        });
-        select.addEventListener('blur', function() {
-            this.style.transform = 'translateY(0)';
-        });
+    // Prevent empty search
+    document.getElementById('searchForm').addEventListener('submit', function(e) {
+        const query = document.getElementById('searchInput').value.trim();
+        const dateFrom = document.querySelector('input[name="date_from"]').value;
+        const dateTo = document.querySelector('input[name="date_to"]').value;
+
+        if (!query && !dateFrom && !dateTo) {
+            e.preventDefault();
+            alert('Please enter a search term or select a date range');
+            return false;
+        }
     });
 </script>
 

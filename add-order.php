@@ -1,10 +1,35 @@
 <?php
 // add-order.php
 session_start();
+require_once 'db.php';
 
-// تضمين مصفوفة المنتجات والطلبات
-require_once 'products.php';
-require_once 'orders-array.php';
+$pdo = getDB();
+
+// جلب جميع المنتجات من قاعدة البيانات
+$stmt = $pdo->query("
+    SELECT 
+        p.product_id,
+        p.name,
+        p.price,
+        p.image,
+        c.name as category_name
+    FROM products p
+    JOIN categories c ON p.category_id = c.category_id
+    ORDER BY p.product_id
+");
+$productsData = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// تحويل المنتجات إلى نفس تنسيق المصفوفة القديمة
+$products = [];
+foreach ($productsData as $product) {
+    $products[$product['product_id']] = [
+            'id' => $product['product_id'],
+            'name' => $product['name'],
+            'price' => (float)$product['price'],
+            'image' => $product['image'] ?: 'images/placeholder.png',
+            'category' => $product['category_name']
+    ];
+}
 
 // متغيرات النموذج
 $customer_name = '';
@@ -14,10 +39,13 @@ $payment_method = '';
 $notes = '';
 $errors = [];
 $success = false;
+$new_order_id = null;
+$new_order_number = '';
 
-// حساب آخر ID للطلب الجديد
-$new_order_id = count($orders) + 1;
-$new_order_number = 'ORD-' . str_pad($new_order_id, 3, '0', STR_PAD_LEFT);
+// الحصول على آخر ID للطلب الجديد من قاعدة البيانات
+$stmt = $pdo->query("SELECT COALESCE(MAX(order_id), 0) + 1 FROM orders");
+$nextOrderId = $stmt->fetchColumn();
+$new_order_number = 'ORD-' . date('Y') . '-' . str_pad($nextOrderId, 4, '0', STR_PAD_LEFT);
 
 // معالجة إرسال النموذج
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -101,34 +129,85 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $total = $subtotal + $gift_wrap_price;
     }
 
-    // إذا لم يكن هناك أخطاء، احفظ الطلب
+    // إذا لم يكن هناك أخطاء، احفظ الطلب في قاعدة البيانات
     if (empty($errors)) {
-        // إنشاء الطلب الجديد
-        $new_order = [
-                'order_number' => $new_order_number,
-                'customer' => $customer_name,
-                'customer_email' => $customer_email,
-                'date' => date('Y-m-d H:i:s'),
-                'subtotal' => $subtotal,
-                'total' => $total,
-                'status' => 'pending',
-                'payment_method' => $payment_method,
-                'items_count' => $items_count,
-                'products' => $products_list,
-                'notes' => $notes,
-                'is_gift' => $is_gift,
-                'gift_box' => $gift_box,
-                'gift_message' => $gift_message,
-                'gift_wrap_price' => $gift_wrap_price
-        ];
+        try {
+            $pdo->beginTransaction();
 
-        // حفظ الطلب (في التطبيق الحقيقي، ستضيفه إلى قاعدة البيانات)
-        // للتجربة، نضيفه إلى مصفوفة ونعرض رسالة نجاح
-        $success = true;
+            // البحث عن المستخدم أو إنشاؤه
+            $stmt = $pdo->prepare("SELECT user_id FROM users WHERE email = ?");
+            $stmt->execute([$customer_email]);
+            $user = $stmt->fetch();
 
-        // إعادة تعيين النموذج
-        $customer_name = $customer_email = $payment_method = $notes = '';
-        $_POST = [];
+            if ($user) {
+                $user_id = $user['user_id'];
+                // تحديث اسم المستخدم إذا تغير
+                $stmt = $pdo->prepare("UPDATE users SET name = ? WHERE user_id = ?");
+                $stmt->execute([$customer_name, $user_id]);
+            } else {
+                // إنشاء مستخدم جديد
+                $stmt = $pdo->prepare("
+                    INSERT INTO users (name, email, password, role, status, created_at) 
+                    VALUES (?, ?, MD5('password123'), 'Customer', 'active', NOW())
+                    RETURNING user_id
+                ");
+                $stmt->execute([$customer_name, $customer_email]);
+                $user_id = $stmt->fetchColumn();
+            }
+
+            // إضافة الطلب
+            $stmt = $pdo->prepare("
+                INSERT INTO orders (
+                    order_number, user_id, coupon_id, status, payment_method, 
+                    subtotal, discount_amount, gift_wrap_price, total, is_gift, 
+                    gift_message, gift_box, notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                RETURNING order_id
+            ");
+
+            $stmt->execute([
+                    $new_order_number,
+                    $user_id,
+                    null, // coupon_id
+                    'pending',
+                    $payment_method,
+                    $subtotal,
+                    0, // discount_amount
+                    $gift_wrap_price,
+                    $total,
+                    $is_gift,
+                    $gift_message,
+                    $gift_box,
+                    $notes
+            ]);
+
+            $new_order_id = $stmt->fetchColumn();
+
+            // إضافة عناصر الطلب
+            foreach ($products_list as $item) {
+                $stmt = $pdo->prepare("
+                    INSERT INTO order_items (order_id, product_id, quantity, unit_price) 
+                    VALUES (?, ?, ?, ?)
+                ");
+                $stmt->execute([
+                        $new_order_id,
+                        $item['id'],
+                        $item['quantity'],
+                        $item['price']
+                ]);
+            }
+
+            $pdo->commit();
+            $success = true;
+
+            // إعادة تعيين النموذج
+            $customer_name = $customer_email = $payment_method = $notes = '';
+            $_POST = [];
+
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            $errors[] = 'Database error: ' . $e->getMessage();
+        }
     }
 }
 ?>
@@ -463,13 +542,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="form-header">
                 <h1><i class="fa-solid fa-cart-plus"></i> Add New Order</h1>
                 <p>Create a new customer order</p>
-                <div class="order-number">New Order #: <?= $new_order_number ?></div>
+                <div class="order-number">New Order #: <?= htmlspecialchars($new_order_number) ?></div>
             </div>
 
-            <?php if ($success): ?>
+            <?php if ($success && $new_order_id): ?>
                 <div class="alert alert-success">
                     <i class="fa-solid fa-check-circle"></i>
-                    <span>Order created successfully! <a href="orders.php" style="color: #4CAF50;">View all orders</a></span>
+                    <span>Order created successfully!
+                        <a href="order-details-admin.php?id=<?= $new_order_id ?>" style="color: #4CAF50;">View order</a> or
+                        <a href="orders.php" style="color: #4CAF50;">view all orders</a>
+                    </span>
                 </div>
             <?php endif; ?>
 
@@ -502,11 +584,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <label><i class="fa-solid fa-credit-card"></i> Payment Method <span class="required">*</span></label>
                             <select name="payment_method" class="form-control" required>
                                 <option value="">Select payment method</option>
-                                <option value="Credit Card" <?= $payment_method == 'Credit Card' ? 'selected' : '' ?>>Credit Card</option>
-                                <option value="PayPal" <?= $payment_method == 'PayPal' ? 'selected' : '' ?>>PayPal</option>
-                                <option value="Bank Transfer" <?= $payment_method == 'Bank Transfer' ? 'selected' : '' ?>>Bank Transfer</option>
-                                <option value="Cash on Delivery" <?= $payment_method == 'Cash on Delivery' ? 'selected' : '' ?>>Cash on Delivery</option>
+                                <option value="card" <?= $payment_method == 'card' ? 'selected' : '' ?>>Credit Card</option>
+                                <option value="paypal" <?= $payment_method == 'paypal' ? 'selected' : '' ?>>PayPal</option>
+                                <option value="cash" <?= $payment_method == 'cash' ? 'selected' : '' ?>>Cash on Delivery</option>
                             </select>
+                            <div class="help-text">Options: card, paypal, or cash</div>
                         </div>
 
                         <div class="form-group">
@@ -535,24 +617,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <label><i class="fa-solid fa-box-open"></i> Gift Box Style <span class="required">*</span></label>
                                 <div class="gift-boxes">
                                     <div class="gift-box-item" data-box="box.png" data-price="5.00" onclick="selectGiftBox(this, 'box.png', 5.00)">
-                                        <img src="images/box.png" class="gift-box-img" alt="Classic Box">
+                                        <img src="images/box.png" class="gift-box-img" alt="Classic Box" onerror="this.src='images/placeholder.png'">
                                         <div class="gift-box-name">Classic Box</div>
                                         <div class="gift-box-price">$5.00</div>
                                     </div>
                                     <div class="gift-box-item" data-box="heartsbag.png" data-price="7.50" onclick="selectGiftBox(this, 'heartsbag.png', 7.50)">
-                                        <img src="images/heartsbag.png" class="gift-box-img" alt="Heart Bag">
+                                        <img src="images/heartsbag.png" class="gift-box-img" alt="Heart Bag" onerror="this.src='images/placeholder.png'">
                                         <div class="gift-box-name">Heart Bag</div>
                                         <div class="gift-box-price">$7.50</div>
                                     </div>
                                     <div class="gift-box-item" data-box="teddywrap.png" data-price="10.00" onclick="selectGiftBox(this, 'teddywrap.png', 10.00)">
-                                        <img src="images/teddywrap.png" class="gift-box-img" alt="Teddy Wrap">
+                                        <img src="images/teddywrap.png" class="gift-box-img" alt="Teddy Wrap" onerror="this.src='images/placeholder.png'">
                                         <div class="gift-box-name">Teddy Wrap</div>
                                         <div class="gift-box-price">$10.00</div>
                                     </div>
-
                                 </div>
                                 <input type="hidden" name="gift_box" id="giftBoxInput" value="">
-                                <input type="hidden" name="gift_wrap_price" id="giftWrapPriceInput" value="0">
                                 <div class="help-text">
                                     <i class="fa-solid fa-info-circle"></i> Choose a gift box style - each style has a fixed price
                                 </div>
@@ -588,10 +668,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                         </td>
                                         <td>
                                             <div style="display: flex; align-items: center; gap: 10px;">
-                                                <img src="<?= $product['image'] ?>" style="width: 40px; height: 40px; border-radius: 8px; object-fit: cover;">
+                                                <img src="<?= htmlspecialchars($product['image']) ?>" style="width: 40px; height: 40px; border-radius: 8px; object-fit: cover;" onerror="this.src='images/placeholder.png'">
                                                 <div>
-                                                    <strong><?= $product['name'] ?></strong>
-                                                    <div style="font-size: 11px; color: var(--secondary-text);"><?= $product['category'] ?></div>
+                                                    <strong><?= htmlspecialchars($product['name']) ?></strong>
+                                                    <div style="font-size: 11px; color: var(--secondary-text);"><?= htmlspecialchars($product['category']) ?></div>
                                                 </div>
                                             </div>
                                         </td>
@@ -678,29 +758,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // Gift box selection
     function selectGiftBox(element, boxValue, price) {
-        // Remove selected class from all boxes
         document.querySelectorAll('.gift-box-item').forEach(item => {
             item.classList.remove('selected');
         });
-
-        // Add selected class to clicked box
         element.classList.add('selected');
-
-        // Set hidden inputs
         document.getElementById('giftBoxInput').value = boxValue;
-        document.getElementById('giftWrapPriceInput').value = price;
-
-        // Update current gift price
         currentGiftPrice = price;
-
-        // Show gift wrap row and update amount
         const giftWrapRow = document.getElementById('giftWrapRow');
         const giftWrapAmount = document.getElementById('giftWrapAmount');
-
         giftWrapRow.style.display = 'flex';
         giftWrapAmount.textContent = '$' + price.toFixed(2);
-
-        // Update total
         updateSummary();
     }
 
@@ -708,22 +775,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     function toggleGiftOptions(isGift) {
         const giftOptions = document.getElementById('giftOptions');
         const giftWrapRow = document.getElementById('giftWrapRow');
-
         if (isGift) {
             giftOptions.style.display = 'block';
         } else {
             giftOptions.style.display = 'none';
             giftWrapRow.style.display = 'none';
-
-            // Reset gift selection
             document.querySelectorAll('.gift-box-item').forEach(item => {
                 item.classList.remove('selected');
             });
             document.getElementById('giftBoxInput').value = '';
-            document.getElementById('giftWrapPriceInput').value = '0';
             currentGiftPrice = 0;
-
-            // Update total
             updateSummary();
         }
     }

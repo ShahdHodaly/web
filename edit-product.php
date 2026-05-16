@@ -1,29 +1,53 @@
 <?php
 // edit-product.php
 session_start();
+require_once 'db.php';
 
-// تضمين مصفوفة المنتجات
-require_once 'products.php';
+$pdo = getDB();
 
 // الحصول على ID المنتج من الرابط
 $product_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
+// جلب المنتج من قاعدة البيانات
+$stmt = $pdo->prepare("
+    SELECT 
+        p.product_id,
+        p.name,
+        p.description,
+        p.price,
+        p.category_id,
+        p.image,
+        p.stock,
+        p.sales_count,
+        p.created_at,
+        p.sale_price,
+        c.name as category_name
+    FROM products p
+    JOIN categories c ON p.category_id = c.category_id
+    WHERE p.product_id = ?
+");
+$stmt->execute([$product_id]);
+$productData = $stmt->fetch(PDO::FETCH_ASSOC);
+
 // التحقق من وجود المنتج
-if (!isset($products[$product_id])) {
+if (!$productData) {
     header("Location: product-admin.php");
     exit;
 }
 
-$product = $products[$product_id];
-$pageTitle = "Edit " . $product['name'] . " | Teddy Shop";
+// جلب جميع التصنيفات للقائمة المنسدلة
+$stmt = $pdo->query("SELECT category_id, name FROM categories ORDER BY name");
+$categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// متغيرات للنموذج
-$product_name = $product['name'];
-$product_price = $product['price'];
-$product_category = $product['category'];
-$product_description = $product['description'] ?? '';
-$product_image = $product['image'];
-$product_stock = $product['stock'] ?? 0;
+// متغيرات للنموذج - تعبئتها من قاعدة البيانات
+$product_name = $productData['name'];
+$product_price = (float)$productData['price'];
+$product_category_id = $productData['category_id'];
+$product_description = $productData['description'] ?? '';
+$product_image = $productData['image'] ?: 'images/placeholder.png';
+$product_stock = (int)$productData['stock'];
+$product_sale_price = $productData['sale_price'] ? (float)$productData['sale_price'] : null;
+
 $errors = [];
 $success = false;
 
@@ -32,9 +56,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // جلب البيانات وتنظيفها
     $product_name = trim($_POST['product_name'] ?? '');
     $product_price = trim($_POST['product_price'] ?? '');
-    $product_category = trim($_POST['product_category'] ?? '');
+    $product_category_id = (int)($_POST['product_category'] ?? 0);
     $product_description = trim($_POST['product_description'] ?? '');
     $product_stock = trim($_POST['product_stock'] ?? '');
+    $product_sale_price = trim($_POST['product_sale_price'] ?? '');
 
     // التحقق من صحة البيانات
     if (empty($product_name)) {
@@ -47,7 +72,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = 'Product price must be a positive number';
     }
 
-    if (empty($product_category)) {
+    if (empty($product_category_id) || $product_category_id <= 0) {
         $errors[] = 'Product category is required';
     }
 
@@ -55,8 +80,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = 'Stock must be a positive number';
     }
 
+    if (!empty($product_sale_price)) {
+        if (!is_numeric($product_sale_price) || $product_sale_price < 0) {
+            $errors[] = 'Sale price must be a positive number';
+        } elseif ($product_sale_price >= $product_price) {
+            $errors[] = 'Sale price must be less than original price';
+        }
+    }
+
     // معالجة رفع الصورة الجديدة
-    $new_image = $product_image; // احتفظ بالصورة القديمة افتراضياً
+    $new_image = $product_image;
 
     if (isset($_FILES['product_image']) && $_FILES['product_image']['error'] === UPLOAD_ERR_OK) {
         $file = $_FILES['product_image'];
@@ -70,7 +103,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             // إنشاء اسم فريد للصورة
             $extension = pathinfo($file['name'], PATHINFO_EXTENSION);
-            $new_filename = strtolower(str_replace(' ', '_', $product_name)) . '_' . time() . '.' . $extension;
+            $new_filename = strtolower(preg_replace('/[^a-zA-Z0-9]/', '_', $product_name)) . '_' . time() . '.' . $extension;
             $upload_path = 'uploads/products/' . $new_filename;
 
             // التأكد من وجود المجلد
@@ -81,7 +114,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (move_uploaded_file($file['tmp_name'], $upload_path)) {
                 $new_image = $upload_path;
                 // حذف الصورة القديمة إذا كانت مختلفة وليست افتراضية
-                if ($product_image != 'images/default-product.png' && file_exists($product_image)) {
+                if ($product_image != 'images/placeholder.png' && file_exists($product_image)) {
                     unlink($product_image);
                 }
             } else {
@@ -90,30 +123,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // إذا لم يكن هناك أخطاء، قم بتحديث المنتج
+    // إذا لم يكن هناك أخطاء، قم بتحديث المنتج في قاعدة البيانات
     if (empty($errors)) {
-        // في التطبيق الحقيقي، ستقوم بتحديث قاعدة البيانات
-        // هنا نعرض رسالة نجاح فقط (للتجربة)
+        try {
+            $pdo->beginTransaction();
 
-        // تحديث مصفوفة المنتجات مؤقتاً
-        $products[$product_id]['name'] = $product_name;
-        $products[$product_id]['price'] = (float)$product_price;
-        $products[$product_id]['category'] = $product_category;
-        $products[$product_id]['description'] = $product_description;
-        $products[$product_id]['image'] = $new_image;
-        $products[$product_id]['stock'] = $product_stock ? (int)$product_stock : 0;
+            // تحديث المنتج
+            $stmt = $pdo->prepare("
+                UPDATE products 
+                SET name = ?, 
+                    description = ?, 
+                    price = ?, 
+                    category_id = ?, 
+                    image = ?, 
+                    stock = ?,
+                    sale_price = ?
+                WHERE product_id = ?
+            ");
 
-        $success = true;
+            $stmt->execute([
+                    $product_name,
+                    $product_description,
+                    $product_price,
+                    $product_category_id,
+                    $new_image,
+                    $product_stock ? (int)$product_stock : 0,
+                    !empty($product_sale_price) ? $product_sale_price : null,
+                    $product_id
+            ]);
 
-        // تحديث المتغيرات المعروضة
-        $product_name = $product_name;
-        $product_price = $product_price;
-        $product_category = $product_category;
-        $product_description = $product_description;
-        $product_image = $new_image;
-        $product_stock = $product_stock;
+            $pdo->commit();
+            $success = true;
+
+            // تحديث المتغيرات المعروضة
+            $product_image = $new_image;
+
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            $errors[] = 'Database error: ' . $e->getMessage();
+        }
     }
 }
+
+$pageTitle = "Edit " . htmlspecialchars($product_name) . " | Teddy Shop";
 ?>
 
 <!DOCTYPE html>
@@ -376,14 +428,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <i class="fa-solid fa-pen-to-square" style="color: var(--primary);"></i>
                     Edit Product
                 </h1>
-                <p>Update product information</p>
+                <p>Update product information for <strong><?= htmlspecialchars($product_name) ?></strong></p>
             </div>
 
             <!-- Success Message -->
             <?php if ($success): ?>
                 <div class="alert alert-success">
                     <i class="fa-solid fa-check-circle"></i>
-                    <span>Product updated successfully! <a href="product_details.php?id=<?= $product_id ?>" style="color: #4CAF50; text-decoration: underline;">View product</a></span>
+                    <span>Product updated successfully! <a href="product_details-admin.php?id=<?= $product_id ?>" style="color: #4CAF50; text-decoration: underline;">View product</a></span>
                 </div>
             <?php endif; ?>
 
@@ -416,17 +468,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <input type="number" step="0.01" name="product_price" class="form-control" value="<?= htmlspecialchars($product_price) ?>" placeholder="0.00" required>
                         </div>
 
+                        <!-- Sale Price -->
+                        <div class="form-group">
+                            <label><i class="fa-solid fa-tag"></i> Sale Price</label>
+                            <input type="number" step="0.01" name="product_sale_price" class="form-control" value="<?= htmlspecialchars($product_sale_price) ?>" placeholder="Leave empty for no sale">
+                            <small style="color: var(--secondary-text);">Optional: Enter sale price (must be less than original price)</small>
+                        </div>
+
                         <!-- Product Category -->
                         <div class="form-group">
                             <label><i class="fa-solid fa-list"></i> Category <span class="required">*</span></label>
                             <select name="product_category" class="form-control" required>
-                                <option value="Teddy Bear" <?= $product_category == 'Teddy Bear' ? 'selected' : '' ?>>Teddy Bear</option>
-                                <option value="Dolls & Barbie" <?= $product_category == 'Dolls & Barbie' ? 'selected' : '' ?>>Dolls & Barbie</option>
-                                <option value="Building Toys" <?= $product_category == 'Building Toys' ? 'selected' : '' ?>>Building Toys</option>
-                                <option value="Cars & Vehicles" <?= $product_category == 'Cars & Vehicles' ? 'selected' : '' ?>>Cars & Vehicles</option>
-                                <option value="Group Games" <?= $product_category == 'Group Games' ? 'selected' : '' ?>>Group Games</option>
-                                <option value="Educational Toys" <?= $product_category == 'Educational Toys' ? 'selected' : '' ?>>Educational Toys</option>
-                                <option value="Puzzles" <?= $product_category == 'Puzzles' ? 'selected' : '' ?>>Puzzles</option>
+                                <option value="">Select Category</option>
+                                <?php foreach($categories as $category): ?>
+                                    <option value="<?= $category['category_id'] ?>" <?= $product_category_id == $category['category_id'] ? 'selected' : '' ?>>
+                                        <?= htmlspecialchars($category['name']) ?>
+                                    </option>
+                                <?php endforeach; ?>
                             </select>
                         </div>
 
@@ -450,7 +508,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         <!-- Current Image -->
                         <div class="current-image">
-                            <img src="<?= htmlspecialchars($product_image) ?>" alt="Current product image" id="currentImage">
+                            <img src="<?= htmlspecialchars($product_image) ?>" alt="Current product image" id="currentImage" onerror="this.src='images/placeholder.png'">
                             <p style="font-size: 12px; color: var(--secondary-text); margin-top: 8px;">Current image</p>
                         </div>
 
@@ -544,6 +602,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         const name = document.querySelector('input[name="product_name"]').value.trim();
         const price = document.querySelector('input[name="product_price"]').value;
         const category = document.querySelector('select[name="product_category"]').value;
+        const salePrice = document.querySelector('input[name="product_sale_price"]').value;
 
         if (!name) {
             e.preventDefault();
@@ -558,6 +617,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!category) {
             e.preventDefault();
             alert('Please select a category');
+            return false;
+        }
+        if (salePrice && parseFloat(salePrice) >= parseFloat(price)) {
+            e.preventDefault();
+            alert('Sale price must be less than original price');
             return false;
         }
     });

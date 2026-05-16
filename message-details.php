@@ -1,27 +1,231 @@
 <?php
 // message-details.php
 session_start();
-
-// تضمين مصفوفة الرسائل
-require_once 'messages-array.php';
+require_once 'db.php';
+require_once 'mailer.php';
+$pdo = getDB();
 
 // الحصول على ID الرسالة من الرابط
 $message_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
+// جلب الرسالة من قاعدة البيانات
+$stmt = $pdo->prepare("
+    SELECT 
+        m.message_id,
+        m.user_id,
+        m.sender_name,
+        m.sender_email,
+        m.subject,
+        m.message,
+        m.reply,
+        m.priority,
+        m.status,
+        m.created_at,
+        u.avatar as sender_avatar
+    FROM messages m
+    LEFT JOIN users u ON m.user_id = u.user_id
+    WHERE m.message_id = ?
+");
+$stmt->execute([$message_id]);
+$messageData = $stmt->fetch(PDO::FETCH_ASSOC);
+
 // التحقق من وجود الرسالة
-if (!isset($messages[$message_id])) {
+if (!$messageData) {
     $_SESSION['error'] = 'Message not found';
     header("Location: messages.php");
     exit;
 }
 
-$message = $messages[$message_id];
+// تنسيق بيانات الرسالة
+$message = [
+        'sender_name' => $messageData['sender_name'],
+        'sender_email' => $messageData['sender_email'],
+        'sender_avatar' => $messageData['sender_avatar'] ?: 'https://ui-avatars.com/api/?name=' . urlencode($messageData['sender_name']) . '&background=F8BBD0&color=000&size=70',
+        'subject' => $messageData['subject'],
+        'message' => $messageData['message'],
+        'priority' => $messageData['priority'],
+        'status' => $messageData['status'],
+        'date' => $messageData['created_at'],
+        'reply' => $messageData['reply'],
+        'reply_date' => $messageData['reply_date'] ?? null
+];
+
 $pageTitle = "Message from " . $message['sender_name'] . " | Teddy Shop";
 
 // تحديث حالة الرسالة إلى مقروءة (إذا كانت غير مقروءة)
 if ($message['status'] === 'unread') {
-    // في التطبيق الحقيقي، ستقوم بتحديث قاعدة البيانات
-    // للتجربة، نعرض رسالة فقط
+    try {
+        $stmt = $pdo->prepare("UPDATE messages SET status = 'read' WHERE message_id = ?");
+        $stmt->execute([$message_id]);
+        $message['status'] = 'read';
+    } catch (PDOException $e) {
+        // تجاهل الخطأ
+    }
+}
+
+// ── تعريف كل المتغيرات اللي بتنستخدم في HTML ──
+$reply_success = false;
+$reply_error = '';
+$emailSent = false;
+$emailStatus = '';
+$toEmail = $messageData['sender_email'] ?? '';
+$toName = $messageData['sender_name'] ?? '';
+$subject = 'Re: ' . ($messageData['subject'] ?? '');
+$emailBody = '';
+
+// معالجة إرسال الرد
+$reply_success = false;
+$reply_error = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'reply') {
+    $reply_text = trim($_POST['reply_text'] ?? '');
+
+    if (empty($reply_text)) {
+        $reply_error = 'Please enter a reply message';
+    } else {
+        try {
+            // حفظ الرد في الداتابيس
+            $stmt = $pdo->prepare("
+                UPDATE messages 
+                SET reply = ?, 
+                    status = 'replied' 
+                WHERE message_id = ?
+            ");
+            $stmt->execute([$reply_text, $message_id]);
+
+            // ── إرسال إيميل لليوزر ──
+            $emailSent = false;
+
+            if (class_exists('PHPMailer\PHPMailer\PHPMailer')) {
+                try {
+                    $mail = new PHPMailer\PHPMailer\PHPMailer(true);
+                    $mail->isSMTP();
+                    $mail->Host       = 'smtp.gmail.com';
+                    $mail->SMTPAuth   = true;
+                    $mail->Username   = $_ENV['EMAIL_ADDRESS'];
+                    $mail->Password   = $_ENV['EMAIL_PASSWORD'];
+                    $mail->SMTPSecure = PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+                    $mail->Port       = 587;
+                    $mail->CharSet    = 'UTF-8';
+
+                    $mail->setFrom($_ENV['EMAIL_ADDRESS'], 'Teddy Lap');
+                    $mail->addAddress($messageData['sender_email'], $messageData['sender_name']);
+
+                    $mail->isHTML(true);
+                    $mail->Subject = 'Re: ' . $messageData['subject'];
+                    $mail->Body    = '
+                    <!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+                    body{font-family:Poppins,Arial,sans-serif;background:#fff5f7;margin:0;padding:0;}
+                    .container{max-width:560px;margin:40px auto;background:#fff;border-radius:24px;box-shadow:0 8px 30px rgba(255,107,129,0.12);overflow:hidden;}
+                    .header{background:linear-gradient(135deg,#ff6b81,#ff9a9e);padding:40px 30px;text-align:center;}
+                    .header h1{color:#fff;font-size:26px;margin:0 0 6px;}
+                    .header p{color:rgba(255,255,255,0.9);font-size:14px;margin:0;}
+                    .body{padding:36px 30px;}
+                    .body h2{color:#333;font-size:20px;margin:0 0 14px;}
+                    .body p{color:#666;font-size:14px;line-height:1.7;margin:0 0 16px;}
+                    .reply-box{background:#fff5f7;border-radius:14px;padding:16px 20px;margin:20px 0;border-left:4px solid #ff6b81;}
+                    .reply-box p{margin:0;font-size:14px;color:#555;line-height:1.6;}
+                    .footer{background:#fff5f7;padding:20px 30px;text-align:center;font-size:12px;color:#aaa;}
+                    </style></head><body>
+                    <div class="container">
+                    <div class="header"><h1>🧸 Message Reply</h1><p>From Teddy Lap Support</p></div>
+                    <div class="body">
+                    <h2>Hi ' . htmlspecialchars($messageData['sender_name']) . ' 👋</h2>
+                    <p>Thank you for contacting us. Here is our reply to your message:</p>
+                    <div class="reply-box">
+                    <p>' . nl2br(htmlspecialchars($reply_text)) . '</p>
+                    </div>
+                    <p style="color:#888;font-size:13px;">If you have any further questions, feel free to contact us again.</p>
+                    </div>
+                    <div class="footer">© 2025 Teddy Shop · We love hearing from you!</div>
+                    </div></body></html>';
+                    $mail->AltBody = strip_tags($reply_text);
+
+                    $mail->send();
+                    $emailSent = true;
+                } catch (Exception $e) {
+                    $emailSent = false;
+                }
+            }
+
+            $emailStatus = $emailSent
+                    ? '✅ Email sent successfully to ' . $messageData['sender_email']
+                    : '❌ Email failed to send. Check error_log for details.';
+
+            $emailStatus = $emailSent
+                    ? '✅ Email sent successfully to ' . $messageData['sender_email']
+                    : '❌ Email failed to send. Check error_log for details.';
+
+            // محاولة استخدام mailer.php لو موجود
+            if (file_exists('mailer.php')) {
+                require_once 'mailer.php';
+                if (function_exists('sendOrderConfirmationEmail')) {
+                    // استخدام دالة الإيميل الموجودة عندك
+                    try {
+                        if (class_exists('PHPMailer\PHPMailer\PHPMailer')) {
+                            $mail = new PHPMailer\PHPMailer\PHPMailer(true);
+                            $mail->isSMTP();
+                            $mail->Host       = 'smtp.gmail.com';
+                            $mail->SMTPAuth   = true;
+                            $mail->Username   = 'your_email@gmail.com';     // ← غيّريه
+                            $mail->Password   = 'your_app_password';        // ← غيّريه
+                            $mail->SMTPSecure = 'tls';
+                            $mail->Port       = 587;
+                            $mail->setFrom('your_email@gmail.com', 'Teddy Lap');
+                            $mail->addAddress($toEmail, $toName);
+                            $mail->isHTML(true);
+                            $mail->Subject = $subject;
+                            $mail->Body    = $emailBody;
+                            $mail->send();
+                            $emailSent = true;
+                        }
+                    } catch (Exception $e) {
+                        $emailSent = false;
+                    }
+                }
+            }
+
+            // لو mailer مش موجود، استخدم mail()
+            if (!$emailSent) {
+                $headers  = "From: Teddy Lap <noreply@teddylap.com>\r\n";
+                $headers .= "MIME-Version: 1.0\r\n";
+                $headers .= "Content-Type: text/html; charset=UTF-8\r\n";
+                @mail($toEmail, $subject, $emailBody, $headers);
+            }
+
+            $reply_success = true;
+            $message['reply'] = $reply_text;
+            $message['status'] = 'replied';
+        } catch (PDOException $e) {
+            $reply_error = 'Database error: ' . $e->getMessage();
+        }
+    }
+}
+
+// معالجة حذف الرسالة
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete') {
+    try {
+        $stmt = $pdo->prepare("DELETE FROM messages WHERE message_id = ?");
+        $stmt->execute([$message_id]);
+        $_SESSION['success'] = 'Message deleted successfully';
+        header("Location: messages.php");
+        exit;
+    } catch (PDOException $e) {
+        $reply_error = 'Database error: ' . $e->getMessage();
+    }
+}
+
+// معالجة تعليم الرسالة كمقروءة (AJAX)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'mark_read') {
+    try {
+        $stmt = $pdo->prepare("UPDATE messages SET status = 'read' WHERE message_id = ?");
+        $stmt->execute([$message_id]);
+        echo json_encode(['success' => true]);
+        exit;
+    } catch (PDOException $e) {
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        exit;
+    }
 }
 ?>
 
@@ -84,7 +288,6 @@ if ($message['status'] === 'unread') {
         .status-unread { background: rgba(255, 152, 0, 0.2); color: #FF9800; }
         .status-replied { background: rgba(33, 150, 243, 0.2); color: #2196F3; }
 
-        /* Sender Info */
         .sender-section {
             background: var(--bg-color);
             border-radius: 20px;
@@ -121,7 +324,6 @@ if ($message['status'] === 'unread') {
             margin: 0;
         }
 
-        /* Message Content */
         .message-content {
             background: var(--bg-color);
             border-radius: 20px;
@@ -144,7 +346,6 @@ if ($message['status'] === 'unread') {
             word-wrap: break-word;
         }
 
-        /* Message Info */
         .info-grid {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
@@ -173,7 +374,6 @@ if ($message['status'] === 'unread') {
             margin-top: 5px;
         }
 
-        /* Priority Badge */
         .priority-badge {
             padding: 6px 15px;
             border-radius: 30px;
@@ -185,7 +385,6 @@ if ($message['status'] === 'unread') {
         .priority-medium { background: rgba(255, 152, 0, 0.2); color: #FF9800; }
         .priority-low { background: rgba(76, 175, 80, 0.2); color: #4CAF50; }
 
-        /* Reply Section */
         .reply-section {
             background: var(--bg-color);
             border-radius: 20px;
@@ -232,7 +431,26 @@ if ($message['status'] === 'unread') {
             border-color: var(--pink);
         }
 
-        /* Action Buttons */
+        .alert {
+            padding: 12px 18px;
+            border-radius: 16px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            animation: slideDown 0.3s ease;
+        }
+        .alert-success {
+            background: rgba(76, 175, 80, 0.1);
+            color: #4CAF50;
+            border: 1px solid #4CAF50;
+        }
+        .alert-error {
+            background: rgba(244, 67, 54, 0.1);
+            color: #F44336;
+            border: 1px solid #F44336;
+        }
+
         .action-buttons {
             display: flex;
             gap: 15px;
@@ -289,6 +507,10 @@ if ($message['status'] === 'unread') {
             from { opacity: 0; transform: translateY(20px); }
             to { opacity: 1; transform: translateY(0); }
         }
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
 
         @media (max-width: 800px) {
             .admin-sidebar { width: 100%; height: auto; position: relative; top: 0; }
@@ -317,10 +539,25 @@ if ($message['status'] === 'unread') {
                 </div>
             </div>
 
+            <!-- Success/Error Messages -->
+            <?php if ($reply_success): ?>
+                <div class="alert alert-success">
+                    <i class="fa-solid fa-check-circle"></i>
+                    <span>Reply sent successfully!</span>
+                </div>
+            <?php endif; ?>
+
+            <?php if ($reply_error): ?>
+                <div class="alert alert-error">
+                    <i class="fa-solid fa-exclamation-triangle"></i>
+                    <span><?= htmlspecialchars($reply_error) ?></span>
+                </div>
+            <?php endif; ?>
+
             <!-- Sender Information -->
             <div class="sender-section">
                 <div class="sender-avatar">
-                    <img src="<?= $message['sender_avatar'] ?>" alt="<?= $message['sender_name'] ?>">
+                    <img src="<?= htmlspecialchars($message['sender_avatar']) ?>" alt="<?= htmlspecialchars($message['sender_name']) ?>" onerror="this.src='images/default-avatar.png'">
                 </div>
                 <div class="sender-details">
                     <h3><?= htmlspecialchars($message['sender_name']) ?></h3>
@@ -338,57 +575,42 @@ if ($message['status'] === 'unread') {
                 </div>
             </div>
 
-            <!-- Message Info -->
-            <div class="info-grid">
-                <div class="info-card">
-                    <i class="fa-regular fa-calendar"></i>
-                    <div class="info-label">Date & Time</div>
-                    <div class="info-value"><?= date('M d, Y', strtotime($message['date'])) ?><br><small><?= date('h:i A', strtotime($message['date'])) ?></small></div>
-                </div>
-                <div class="info-card">
-                    <i class="fa-solid fa-flag"></i>
-                    <div class="info-label">Priority</div>
-                    <div class="info-value">
-                        <span class="priority-badge priority-<?= $message['priority'] ?>">
-                            <?= ucfirst($message['priority']) ?>
-                        </span>
-                    </div>
-                </div>
-                <div class="info-card">
-                    <i class="fa-regular fa-id-card"></i>
-                    <div class="info-label">Message ID</div>
-                    <div class="info-value">#<?= $message_id ?></div>
-                </div>
-            </div>
+
 
             <!-- Admin Reply Section -->
             <div class="reply-section">
                 <h4><i class="fa-solid fa-reply"></i> Admin Response</h4>
-                <?php if (isset($message['reply']) && !empty($message['reply'])): ?>
+                <?php if (!empty($message['reply'])): ?>
                     <div class="reply-box">
                         <p class="reply-text"><?= nl2br(htmlspecialchars($message['reply'])) ?></p>
-                        <p class="reply-date"><i class="fa-regular fa-calendar"></i> Replied on <?= date('M d, Y', strtotime($message['reply_date'] ?? 'now')) ?></p>
                     </div>
                 <?php else: ?>
-                    <div class="reply-form">
-                        <textarea id="replyMessage" rows="4" placeholder="Write a response to this message..."></textarea>
-                        <button class="btn-action btn-reply" onclick="sendReply(<?= $message_id ?>)">
+                    <form method="POST" class="reply-form" id="replyForm">
+                        <input type="hidden" name="action" value="reply">
+                        <textarea name="reply_text" id="replyMessage" rows="4" placeholder="Write a response to this message..."></textarea>
+                        <button type="submit" class="btn-action btn-reply">
                             <i class="fa-solid fa-paper-plane"></i> Send Reply
                         </button>
-                    </div>
+                    </form>
                 <?php endif; ?>
             </div>
 
             <!-- Action Buttons -->
             <div class="action-buttons">
                 <?php if ($message['status'] === 'unread'): ?>
-                    <button class="btn-action btn-mark-read" onclick="markAsRead(<?= $message_id ?>)">
-                        <i class="fa-solid fa-check-double"></i> Mark as Read
-                    </button>
+                    <form method="POST" style="display: inline;">
+                        <input type="hidden" name="action" value="mark_read">
+                        <button type="submit" class="btn-action btn-mark-read">
+                            <i class="fa-solid fa-check-double"></i> Mark as Read
+                        </button>
+                    </form>
                 <?php endif; ?>
-                <button class="btn-action btn-delete" onclick="deleteMessage(<?= $message_id ?>)">
-                    <i class="fa-solid fa-trash"></i> Delete Message
-                </button>
+                <form method="POST" style="display: inline;" onsubmit="return confirmDelete()">
+                    <input type="hidden" name="action" value="delete">
+                    <button type="submit" class="btn-action btn-delete">
+                        <i class="fa-solid fa-trash"></i> Delete Message
+                    </button>
+                </form>
                 <a href="messages.php" class="btn-action btn-back">
                     <i class="fa-solid fa-arrow-left"></i> Back to Messages
                 </a>
@@ -398,355 +620,21 @@ if ($message['status'] === 'unread') {
 </div>
 
 <script>
-    function markAsRead(id) {
-        // إنشاء الـ overlay
-        const overlay = document.createElement('div');
-        overlay.style.position = 'fixed';
-        overlay.style.top = '0';
-        overlay.style.left = '0';
-        overlay.style.width = '100%';
-        overlay.style.height = '100%';
-        overlay.style.backgroundColor = 'rgba(0,0,0,0.5)';
-        overlay.style.zIndex = '9998';
-        overlay.style.display = 'flex';
-        overlay.style.alignItems = 'center';
-        overlay.style.justifyContent = 'center';
-        overlay.style.opacity = '0';
-        overlay.style.transition = 'opacity 0.3s ease';
-
-        // إنشاء الـ popup
-        const popup = document.createElement('div');
-        popup.style.backgroundColor = 'var(--card-bg, #ffffff)';
-        popup.style.color = 'var(--text-color, #333)';
-        popup.style.borderRadius = '28px';
-        popup.style.padding = '28px 24px';
-        popup.style.maxWidth = '420px';
-        popup.style.width = '90%';
-        popup.style.boxShadow = '0 25px 45px rgba(0,0,0,0.25)';
-        popup.style.textAlign = 'center';
-        popup.style.fontFamily = "'Poppins', sans-serif";
-        popup.style.transform = 'scale(0.9)';
-        popup.style.transition = 'transform 0.25s ease';
-        popup.style.border = '1px solid var(--pink, #F8BBD0)';
-
-        // أيقونة
-        const icon = document.createElement('div');
-        icon.textContent = '✉️';
-        icon.style.fontSize = '40px';
-        icon.style.marginBottom = '12px';
-
-        // نص التأكيد
-        const message = document.createElement('p');
-        message.textContent = 'Mark this message as read?';
-        message.style.fontSize = '15px';
-        message.style.margin = '0 0 22px 0';
-        message.style.lineHeight = '1.6';
-
-        // حاوية الأزرار
-        const btnContainer = document.createElement('div');
-        btnContainer.style.display = 'flex';
-        btnContainer.style.gap = '12px';
-        btnContainer.style.justifyContent = 'center';
-
-        // زر الإلغاء
-        const cancelBtn = document.createElement('button');
-        cancelBtn.textContent = 'Cancel';
-        cancelBtn.style.flex = '1';
-        cancelBtn.style.padding = '11px 20px';
-        cancelBtn.style.borderRadius = '14px';
-        cancelBtn.style.border = '1px solid var(--pink, #F8BBD0)';
-        cancelBtn.style.backgroundColor = 'transparent';
-        cancelBtn.style.color = 'var(--text-color, #333)';
-        cancelBtn.style.fontFamily = "'Poppins', sans-serif";
-        cancelBtn.style.fontSize = '14px';
-        cancelBtn.style.fontWeight = '500';
-        cancelBtn.style.cursor = 'pointer';
-        cancelBtn.style.transition = 'all 0.2s ease';
-        cancelBtn.addEventListener('mouseover', function() {
-            cancelBtn.style.backgroundColor = 'var(--pink, #F8BBD0)';
-            cancelBtn.style.color = '#fff';
-        });
-        cancelBtn.addEventListener('mouseout', function() {
-            cancelBtn.style.backgroundColor = 'transparent';
-            cancelBtn.style.color = 'var(--text-color, #333)';
-        });
-
-        // زر التأكيد
-        const confirmBtn = document.createElement('button');
-        confirmBtn.textContent = 'Mark as Read';
-        confirmBtn.style.flex = '1';
-        confirmBtn.style.padding = '11px 20px';
-        confirmBtn.style.borderRadius = '14px';
-        confirmBtn.style.border = 'none';
-        confirmBtn.style.backgroundColor = 'var(--pink, #F8BBD0)';
-        confirmBtn.style.color = '#fff';
-        confirmBtn.style.fontFamily = "'Poppins', sans-serif";
-        confirmBtn.style.fontSize = '14px';
-        confirmBtn.style.fontWeight = '600';
-        confirmBtn.style.cursor = 'pointer';
-        confirmBtn.style.transition = 'all 0.2s ease';
-        confirmBtn.addEventListener('mouseover', function() {
-            confirmBtn.style.backgroundColor = '#F48FB1';
-            confirmBtn.style.transform = 'scale(1.03)';
-        });
-        confirmBtn.addEventListener('mouseout', function() {
-            confirmBtn.style.backgroundColor = 'var(--pink, #F8BBD0)';
-            confirmBtn.style.transform = 'scale(1)';
-        });
-
-        // تجميع
-        btnContainer.appendChild(cancelBtn);
-        btnContainer.appendChild(confirmBtn);
-        popup.appendChild(icon);
-        popup.appendChild(message);
-        popup.appendChild(btnContainer);
-        overlay.appendChild(popup);
-        document.body.appendChild(overlay);
-
-        // تأثير الظهور
-        requestAnimationFrame(function() {
-            overlay.style.opacity = '1';
-            popup.style.transform = 'scale(1)';
-        });
-
-        // دالة إغلاق
-        function closePopup() {
-            popup.style.transform = 'scale(0.9)';
-            overlay.style.opacity = '0';
-            setTimeout(function() {
-                overlay.remove();
-            }, 300);
-        }
-
-        // دالة إظهار رسالة النجاح
-        function showSuccess() {
-            // تفريغ الـ popup
-            popup.innerHTML = '';
-
-            // أيقونة النجاح
-            const successIcon = document.createElement('div');
-            successIcon.textContent = '✅';
-            successIcon.style.fontSize = '40px';
-            successIcon.style.marginBottom = '12px';
-
-            // نص النجاح
-            const successMsg = document.createElement('p');
-            successMsg.textContent = 'Message marked as read (Demo)';
-            successMsg.style.fontSize = '15px';
-            successMsg.style.margin = '0 0 22px 0';
-            successMsg.style.lineHeight = '1.6';
-
-            // زر حسناً
-            const okBtn = document.createElement('button');
-            okBtn.textContent = 'OK';
-            okBtn.style.padding = '11px 40px';
-            okBtn.style.borderRadius = '14px';
-            okBtn.style.border = 'none';
-            okBtn.style.backgroundColor = 'var(--pink, #F8BBD0)';
-            okBtn.style.color = '#fff';
-            okBtn.style.fontFamily = "'Poppins', sans-serif";
-            okBtn.style.fontSize = '14px';
-            okBtn.style.fontWeight = '600';
-            okBtn.style.cursor = 'pointer';
-            okBtn.style.transition = 'all 0.2s ease';
-            okBtn.addEventListener('mouseover', function() {
-                okBtn.style.backgroundColor = '#F48FB1';
-            });
-            okBtn.addEventListener('mouseout', function() {
-                okBtn.style.backgroundColor = 'var(--pink, #F8BBD0)';
-            });
-
-            // تأثير تبديل المحتوى
-            popup.style.transform = 'scale(0.9)';
-            setTimeout(function() {
-                popup.appendChild(successIcon);
-                popup.appendChild(successMsg);
-                popup.appendChild(okBtn);
-                popup.style.transform = 'scale(1)';
-            }, 250);
-
-            okBtn.addEventListener('click', closePopup);
-        }
-
-        // أحداث الأزرار
-        cancelBtn.addEventListener('click', closePopup);
-
-        confirmBtn.addEventListener('click', function() {
-            showSuccess();
-        });
-
-        overlay.addEventListener('click', function(e) {
-            if (e.target === overlay) closePopup();
-        });
-
-        document.addEventListener('keydown', function handleEsc(e) {
-            if (e.key === 'Escape') {
-                closePopup();
-                document.removeEventListener('keydown', handleEsc);
-            }
-        });
+    function confirmDelete() {
+        return confirm('Are you sure you want to delete this message? This action cannot be undone.');
     }
 
-    function showAdminConfirm(message, onConfirm) {
-        // 1. إنشاء overlay الخلفية
-        const overlay = document.createElement('div');
-        overlay.id = 'admin-confirm-overlay';
-        overlay.style.position = 'fixed';
-        overlay.style.top = '0';
-        overlay.style.left = '0';
-        overlay.style.width = '100%';
-        overlay.style.height = '100%';
-        overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.6)';
-        overlay.style.backdropFilter = 'blur(3px)';
-        overlay.style.zIndex = '9998';
-        overlay.style.display = 'flex';
-        overlay.style.alignItems = 'center';
-        overlay.style.justifyContent = 'center';
-        overlay.style.opacity = '0';
-        overlay.style.transition = 'opacity 0.3s ease';
-
-        // 2. إنشاء نافذة الـ Popup
-        const popup = document.createElement('div');
-        popup.id = 'admin-confirm-popup';
-        popup.style.backgroundColor = 'var(--card-bg, #ffffff)';
-        popup.style.color = 'var(--text-color, #333)';
-        popup.style.borderRadius = '28px';
-        popup.style.padding = '28px 24px';
-        popup.style.maxWidth = '420px';
-        popup.style.width = '90%';
-        popup.style.boxShadow = '0 25px 45px rgba(0,0,0,0.25)';
-        popup.style.textAlign = 'center';
-        popup.style.fontFamily = "'Poppins', sans-serif";
-        popup.style.transform = 'scale(0.9)';
-        popup.style.transition = 'transform 0.25s ease';
-        popup.style.border = '1px solid var(--pink, #F8BBD0)';
-
-        // محتوى البوب أب
-        popup.innerHTML = `
-        <div style="font-size: 58px; margin-bottom: 12px;">⚠️</div>
-        <h3 style="font-size: 24px; font-weight: 600; margin-bottom: 12px;">Are you sure?</h3>
-        <p style="font-size: 16px; color: var(--secondary-text, #555); margin-bottom: 28px; line-height: 1.5;">${message}</p>
-        <div style="display: flex; gap: 15px; justify-content: center;">
-            <button id="confirm-cancel-btn" style="background: transparent; border: 2px solid var(--pink, #F8BBD0); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer; color: var(--text-color, #333); transition: all 0.2s;">Cancel</button>
-            <button id="confirm-ok-btn" style="background: #d9534f; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer; box-shadow: 0 4px 8px rgba(217,83,79,0.3); transition: all 0.2s;">Delete</button>
-        </div>
-    `;
-
-        overlay.appendChild(popup);
-        document.body.appendChild(overlay);
-
-        // ظهور الأنيميشن
-        setTimeout(() => {
-            overlay.style.opacity = '1';
-            popup.style.transform = 'scale(1)';
-        }, 10);
-
-        // إزالة البوب أب
-        function closePopup() {
-            overlay.style.opacity = '0';
-            popup.style.transform = 'scale(0.9)';
-            setTimeout(() => {
-                if (overlay && overlay.parentNode) overlay.remove();
-            }, 250);
-        }
-
-        // دالة عرض رسالة النجاح (toast منتصف الصفحة)
-        function showSuccessToast() {
-            const toast = document.createElement('div');
-            toast.id = 'admin-success-toast';
-            toast.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 12px;">
-
-                <div>
-                    <strong style="font-size: 18px;">Removed from the system!</strong>
-
-                </div>
-            </div>
-        `;
-            toast.style.position = 'fixed';
-            toast.style.top = '50%';
-            toast.style.left = '50%';
-            toast.style.transform = 'translate(-50%, -50%) scale(0.9)';
-            toast.style.backgroundColor = 'var(--card-bg, #fff)';
-            toast.style.color = 'var(--text-color, #333)';
-            toast.style.padding = '18px 28px';
-            toast.style.borderRadius = '60px';
-            toast.style.boxShadow = '0 20px 35px rgba(0,0,0,0.2)';
-            toast.style.zIndex = '10000';
-            toast.style.fontFamily = "'Poppins', sans-serif";
-            toast.style.borderRight = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderLeft = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderTop = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderBottom = '4px solid var(--pink, #F8BBD0)';
-            toast.style.backdropFilter = 'blur(12px)';
-            toast.style.opacity = '0';
-            toast.style.transition = 'all 0.25s cubic-bezier(0.34, 1.2, 0.64, 1)';
-            toast.style.fontWeight = '500';
-            toast.style.textAlign = 'center';
-            toast.style.minWidth = '280px';
-            toast.style.boxSizing = 'border-box';
-
-            document.body.appendChild(toast);
-
-            setTimeout(() => {
-                toast.style.opacity = '1';
-                toast.style.transform = 'translate(-50%, -50%) scale(1)';
-            }, 20);
-
-            // إخفاء الرسالة بعد 2.5 ثانية
-            setTimeout(() => {
-                toast.style.opacity = '0';
-                toast.style.transform = 'translate(-50%, -50%) scale(0.95)';
-                setTimeout(() => {
-                    if (toast && toast.parentNode) toast.remove();
-                }, 250);
-            }, 2500);
-        }
-
-        // أحداث الأزرار
-        const cancelBtn = popup.querySelector('#confirm-cancel-btn');
-        const confirmBtn = popup.querySelector('#confirm-ok-btn');
-
-        cancelBtn.addEventListener('click', () => {
-            closePopup();
-        });
-
-        confirmBtn.addEventListener('click', () => {
-            // ✅ بدون حذف فعلي – فقط استدعاء callback إذا أردت تنفيذ شيء لاحقاً (مثل تحديث واجهة)
-            if (onConfirm && typeof onConfirm === 'function') {
-                onConfirm();  // هون بتقدر تعمل أي شيء زي تحديث UI بدون حذف حقيقي
-            }
-            closePopup();
-            // عرض رسالة النجاح الجميلة في منتصف الصفحة
-            showSuccessToast();
-        });
-
-        // إغلاق عند الضغط على overlay
-        overlay.addEventListener('click', (e) => {
-            if (e.target === overlay) closePopup();
-        });
-    }
-
-    function deleteMessage(id) {
-       showAdminConfirm('Are you sure you want to delete this message?', 'Delete Message', 'Delete', 'Cancel', () => {
-
-       })
-    }
-
-    function sendReply(id) {
-        const replyText = document.getElementById('replyMessage')?.value.trim();
-        if(!replyText) {
+    // Form validation for reply
+    document.getElementById('replyForm')?.addEventListener('submit', function(e) {
+        const textarea = this.querySelector('textarea[name="reply_text"]');
+        if (!textarea.value.trim()) {
+            e.preventDefault();
             alert('Please enter a reply message');
-            return;
         }
-        if(confirm('Send reply to this message?')) {
-            alert('Reply sent! (Demo)');
-        }
-    }
-
+    });
 
     // Focus effects
-    const inputs = document.querySelectorAll('.form-control, textarea');
+    const inputs = document.querySelectorAll('textarea');
     inputs.forEach(input => {
         input.addEventListener('focus', function() {
             this.style.transform = 'translateY(-2px)';

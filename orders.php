@@ -1,17 +1,87 @@
 <?php
 // orders.php
 session_start();
+require_once 'db.php';
 
-// تضمين مصفوفة الطلبات
-require_once 'orders-array.php';
+$pdo = getDB();
 
 // Pagination
 $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
 $perPage = 3;
+
+// --- جلب الطلبات من قاعدة البيانات مع معلومات العملاء والعناصر ---
+$stmt = $pdo->query("
+    SELECT 
+        o.order_id,
+        o.order_number,
+        o.user_id,
+        o.status,
+        o.payment_method,
+        o.subtotal,
+        o.discount_amount,
+        o.gift_wrap_price,
+        o.total,
+        o.is_gift,
+        o.gift_message,
+        o.gift_box,
+        o.notes,
+        o.created_at,
+        u.name as customer_name,
+        u.email as customer_email,
+        u.phone as customer_phone,
+        (
+            SELECT COUNT(*) 
+            FROM order_items 
+            WHERE order_id = o.order_id
+        ) as items_count
+    FROM orders o
+    JOIN users u ON o.user_id = u.user_id
+    ORDER BY o.created_at DESC
+");
+$ordersFromDB = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// تحويل الطلبات إلى نفس تنسيق المصفوفة القديمة للتوافق مع JavaScript
+$orders = [];
+foreach ($ordersFromDB as $order) {
+    $orders[$order['order_id']] = [
+            'id' => $order['order_id'],
+            'order_number' => $order['order_number'],
+            'customer' => $order['customer_name'],
+            'customer_email' => $order['customer_email'],
+            'date' => $order['created_at'],
+            'total' => (float)$order['total'],
+            'status' => $order['status'],
+            'payment_method' => $order['payment_method'],
+            'items_count' => (int)$order['items_count'],
+            'subtotal' => (float)$order['subtotal'],
+            'discount_amount' => (float)$order['discount_amount'],
+            'gift_wrap_price' => (float)$order['gift_wrap_price'],
+            'is_gift' => (int)$order['is_gift'],
+            'gift_message' => $order['gift_message'],
+            'gift_box' => $order['gift_box'],
+            'notes' => $order['notes']
+    ];
+}
+
+// حساب الإحصائيات من قاعدة البيانات
 $totalOrders = count($orders);
+
+// إجمالي الإيرادات
+$stmt = $pdo->query("SELECT COALESCE(SUM(total), 0) FROM orders WHERE status != 'cancelled'");
+$totalRevenue = $stmt->fetchColumn();
+
+// الطلبات المعلقة
+$stmt = $pdo->query("SELECT COUNT(*) FROM orders WHERE status = 'pending'");
+$pendingOrders = $stmt->fetchColumn();
+
+// الطلبات المكتملة (completed + shipped)
+$stmt = $pdo->query("SELECT COUNT(*) FROM orders WHERE status IN ('completed', 'shipped')");
+$completedOrders = $stmt->fetchColumn();
+
+// Pagination
 $totalPages = ceil($totalOrders / $perPage);
 $offset = ($page - 1) * $perPage;
-$paginatedGames = array_slice($orders, $offset, $perPage, true);
+$paginatedOrders = array_slice($orders, $offset, $perPage, true);
 ?>
 
 <!DOCTYPE html>
@@ -467,44 +537,7 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
             </div>
         </div>
 
-        <!-- Search Bar + Add Order -->
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; gap: 20px; flex-wrap: wrap;">
-            <!-- Search Bar -->
-            <div class="search-container">
-                <form action="search-orders.php" method="GET" style="width: 100%;">
-                    <div style="position: relative; width: 100%;">
-                        <i class="fa-solid fa-magnifying-glass search-icon"></i>
-                        <input type="text"
-                               name="q"
-                               class="search-input"
-                               placeholder="Search by order #, customer..."
-                               id="searchInput">
-                        <button type="submit" class="search-btn" id="searchBtn">
-                            <i class="fa-solid fa-arrow-right"></i> Search
-                        </button>
-                    </div>
-                </form>
-            </div>
-
-            <!-- Add Order Button -->
-            <a href="add-order.php" class="add-order-btn" id="addOrderBtn">
-                <div>
-                    <i class="fa-solid fa-plus"></i>
-                </div>
-                <div>
-                    <div style="font-weight: 600; color: var(--text-color);">Add Order</div>
-                    <div style="font-size: 12px; color: var(--secondary-text);">New order</div>
-                </div>
-            </a>
-        </div>
-
         <!-- Stats Cards -->
-        <?php
-        $totalRevenue = array_sum(array_column($orders, 'total'));
-        $pendingOrders = count(array_filter($orders, fn($o) => $o['status'] === 'pending'));
-        $processingOrders = count(array_filter($orders, fn($o) => $o['status'] === 'processing'));
-        $completedOrders = count(array_filter($orders, fn($o) => in_array($o['status'], ['completed', 'shipped'])));
-        ?>
         <div class="stats-mini">
             <div class="stat-mini-card">
                 <div class="stat-mini-info">
@@ -552,10 +585,10 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
                 <div class="filter-item">
                     <select class="filter-select" id="statusFilter">
                         <option value="">All Status</option>
-                        <option value="completed">Completed</option>
-                        <option value="processing">Processing</option>
                         <option value="pending">Pending</option>
+                        <option value="processing">Processing</option>
                         <option value="shipped">Shipped</option>
+                        <option value="completed">Completed</option>
                         <option value="cancelled">Cancelled</option>
                     </select>
                 </div>
@@ -618,15 +651,27 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
                 <i class="fa-solid fa-trash-can"></i> Bulk Delete
             </button>
         </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; gap: 20px; flex-wrap: wrap;">
+            <!-- Add Order Button -->
+            <a href="add-order.php" class="add-order-btn" id="addOrderBtn">
+                <div>
+                    <i class="fa-solid fa-plus"></i>
+                </div>
+                <div>
+                    <div style="font-weight: 600; color: var(--text-color);">Add Order</div>
+                    <div style="font-size: 12px; color: var(--secondary-text);">New order</div>
+                </div>
+            </a>
+        </div>
     </main>
 </div>
 
 <script>
     // ===== بيانات الطلبات من PHP إلى JavaScript =====
     const allOrders = <?php echo json_encode($orders); ?>;
-    const ordersArray = Object.entries(allOrders).map(([id, order]) => {
+    const ordersArray = Object.values(allOrders).map(order => {
         return {
-            id: id,
+            id: order.id,
             order_number: order.order_number,
             customer: order.customer,
             customer_email: order.customer_email,
@@ -637,8 +682,6 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
             items_count: parseInt(order.items_count)
         };
     });
-
-    console.log('Orders loaded:', ordersArray); // للتأكد من تحميل البيانات
 
     let currentPage = 1;
     let perPage = 3;
@@ -665,10 +708,7 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
 
         let html = '';
         paginatedOrders.forEach(order => {
-            // الحالة جاهزة من الأراي (مكتوبة lowercase)
             const statusClass = order.status;
-
-            // تنسيق التاريخ
             const date = new Date(order.date);
             const formattedDate = date.toLocaleDateString('en-US', {
                 month: 'short',
@@ -679,13 +719,13 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
             html += `
                 <tr>
                     <td><input type="checkbox" class="order-checkbox" style="transform: scale(1.2); cursor: pointer;" value="${order.id}"></td>
-                    <td><strong style="color: var(--primary);">${order.order_number}</strong></td>
+                    <td><strong style="color: var(--primary);">${escapeHtml(order.order_number)}</strong></td>
                     <td>
                         <div class="customer-info">
-                            <div class="customer-avatar">${order.customer.charAt(0).toUpperCase()}</div>
+                            <div class="customer-avatar">${escapeHtml(order.customer.charAt(0).toUpperCase())}</div>
                             <div>
-                                <div style="font-weight: 600;">${order.customer}</div>
-                                <div style="font-size: 11px; color: var(--secondary-text);">${order.customer_email}</div>
+                                <div style="font-weight: 600;">${escapeHtml(order.customer)}</div>
+                                <div style="font-size: 11px; color: var(--secondary-text);">${escapeHtml(order.customer_email)}</div>
                             </div>
                         </div>
                     </td>
@@ -722,6 +762,12 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
         updatePaginationControls();
     }
 
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
     function updatePaginationInfo() {
         const start = (currentPage - 1) * perPage + 1;
         const end = Math.min(start + perPage - 1, filteredOrders.length);
@@ -739,14 +785,12 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
         const paginationDiv = document.getElementById('paginationControls');
         let html = '';
 
-        // Previous button
         if (currentPage > 1) {
             html += `<a href="#" onclick="changePage(${currentPage - 1}); return false;" class="page-item"><i class="fa-solid fa-chevron-left"></i></a>`;
         } else {
             html += `<span class="page-item disabled"><i class="fa-solid fa-chevron-left"></i></span>`;
         }
 
-        // Page numbers
         for (let i = 1; i <= totalPages; i++) {
             if (i === currentPage) {
                 html += `<span class="page-item active">${i}</span>`;
@@ -755,7 +799,6 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
             }
         }
 
-        // Next button
         if (currentPage < totalPages) {
             html += `<a href="#" onclick="changePage(${currentPage + 1}); return false;" class="page-item"><i class="fa-solid fa-chevron-right"></i></a>`;
         } else {
@@ -771,7 +814,6 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
     }
 
     function showAdminConfirm(message, onConfirm) {
-        // 1. إنشاء overlay الخلفية
         const overlay = document.createElement('div');
         overlay.id = 'admin-confirm-overlay';
         overlay.style.position = 'fixed';
@@ -788,7 +830,6 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
         overlay.style.opacity = '0';
         overlay.style.transition = 'opacity 0.3s ease';
 
-        // 2. إنشاء نافذة الـ Popup
         const popup = document.createElement('div');
         popup.id = 'admin-confirm-popup';
         popup.style.backgroundColor = 'var(--card-bg, #ffffff)';
@@ -804,27 +845,24 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
         popup.style.transition = 'transform 0.25s ease';
         popup.style.border = '1px solid var(--pink, #F8BBD0)';
 
-        // محتوى البوب أب
         popup.innerHTML = `
-        <div style="font-size: 58px; margin-bottom: 12px;">⚠️</div>
-        <h3 style="font-size: 24px; font-weight: 600; margin-bottom: 12px;">Are you sure?</h3>
-        <p style="font-size: 16px; color: var(--secondary-text, #555); margin-bottom: 28px; line-height: 1.5;">${message}</p>
-        <div style="display: flex; gap: 15px; justify-content: center;">
-            <button id="confirm-cancel-btn" style="background: transparent; border: 2px solid var(--pink, #F8BBD0); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer; color: var(--text-color, #333); transition: all 0.2s;">Cancel</button>
-            <button id="confirm-ok-btn" style="background: #d9534f; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer; box-shadow: 0 4px 8px rgba(217,83,79,0.3); transition: all 0.2s;">Delete</button>
-        </div>
-    `;
+            <div style="font-size: 58px; margin-bottom: 12px;">⚠️</div>
+            <h3 style="font-size: 24px; font-weight: 600; margin-bottom: 12px;">Are you sure?</h3>
+            <p style="font-size: 16px; color: var(--secondary-text, #555); margin-bottom: 28px; line-height: 1.5;">${message}</p>
+            <div style="display: flex; gap: 15px; justify-content: center;">
+                <button id="confirm-cancel-btn" style="background: transparent; border: 2px solid var(--pink, #F8BBD0); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer; color: var(--text-color, #333); transition: all 0.2s;">Cancel</button>
+                <button id="confirm-ok-btn" style="background: #d9534f; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer; box-shadow: 0 4px 8px rgba(217,83,79,0.3); transition: all 0.2s;">Delete</button>
+            </div>
+        `;
 
         overlay.appendChild(popup);
         document.body.appendChild(overlay);
 
-        // ظهور الأنيميشن
         setTimeout(() => {
             overlay.style.opacity = '1';
             popup.style.transform = 'scale(1)';
         }, 10);
 
-        // إزالة البوب أب
         function closePopup() {
             overlay.style.opacity = '0';
             popup.style.transform = 'scale(0.9)';
@@ -833,19 +871,14 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
             }, 250);
         }
 
-        // دالة عرض رسالة النجاح (toast منتصف الصفحة)
         function showSuccessToast() {
             const toast = document.createElement('div');
-            toast.id = 'admin-success-toast';
             toast.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 12px;">
-
-                <div>
-                    <strong style="font-size: 18px;">Removed from the system!</strong>
-
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <i class="fa-solid fa-check-circle" style="font-size: 28px; color: #28a745;"></i>
+                    <div><strong style="font-size: 18px;">Order removed successfully!</strong></div>
                 </div>
-            </div>
-        `;
+            `;
             toast.style.position = 'fixed';
             toast.style.top = '50%';
             toast.style.left = '50%';
@@ -857,17 +890,13 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
             toast.style.boxShadow = '0 20px 35px rgba(0,0,0,0.2)';
             toast.style.zIndex = '10000';
             toast.style.fontFamily = "'Poppins', sans-serif";
-            toast.style.borderRight = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderLeft = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderTop = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderBottom = '4px solid var(--pink, #F8BBD0)';
+            toast.style.border = '2px solid #28a745';
             toast.style.backdropFilter = 'blur(12px)';
             toast.style.opacity = '0';
             toast.style.transition = 'all 0.25s cubic-bezier(0.34, 1.2, 0.64, 1)';
             toast.style.fontWeight = '500';
             toast.style.textAlign = 'center';
             toast.style.minWidth = '280px';
-            toast.style.boxSizing = 'border-box';
 
             document.body.appendChild(toast);
 
@@ -876,7 +905,6 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
                 toast.style.transform = 'translate(-50%, -50%) scale(1)';
             }, 20);
 
-            // إخفاء الرسالة بعد 2.5 ثانية
             setTimeout(() => {
                 toast.style.opacity = '0';
                 toast.style.transform = 'translate(-50%, -50%) scale(0.95)';
@@ -886,7 +914,6 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
             }, 2500);
         }
 
-        // أحداث الأزرار
         const cancelBtn = popup.querySelector('#confirm-cancel-btn');
         const confirmBtn = popup.querySelector('#confirm-ok-btn');
 
@@ -894,24 +921,55 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
             closePopup();
         });
 
-        confirmBtn.addEventListener('click', () => {
-            // ✅ بدون حذف فعلي – فقط استدعاء callback إذا أردت تنفيذ شيء لاحقاً (مثل تحديث واجهة)
+        confirmBtn.addEventListener('click', async () => {
             if (onConfirm && typeof onConfirm === 'function') {
-                onConfirm();  // هون بتقدر تعمل أي شيء زي تحديث UI بدون حذف حقيقي
+                await onConfirm();
             }
             closePopup();
-            // عرض رسالة النجاح الجميلة في منتصف الصفحة
             showSuccessToast();
         });
 
-        // إغلاق عند الضغط على overlay
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) closePopup();
         });
     }
 
-    // ================== وظائف إضافية ==================
+    // ================== وظائف AJAX ==================
+    async function deleteOrderFromDB(orderId) {
+        try {
+            const response = await fetch('delete-order.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: 'order_id=' + orderId
+            });
+            const result = await response.json();
+            return result.success;
+        } catch (error) {
+            console.error('Error:', error);
+            return false;
+        }
+    }
 
+    async function bulkDeleteFromDB(orderIds) {
+        try {
+            const response = await fetch('bulk-delete-orders.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ order_ids: orderIds })
+            });
+            const result = await response.json();
+            return result.success;
+        } catch (error) {
+            console.error('Error:', error);
+            return false;
+        }
+    }
+
+    // ================== وظائف إضافية ==================
     function viewOrder(id) {
         window.location.href = 'order-details-admin.php?id=' + id;
     }
@@ -925,16 +983,23 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
     }
 
     function deleteOrder(id) {
-        showAdminConfirm('Are you sure you want to delete this order?', () => {
-
-        })
+        showAdminConfirm('Are you sure you want to delete this order?', async () => {
+            const success = await deleteOrderFromDB(id);
+            if (success) {
+                const index = ordersArray.findIndex(o => o.id == id);
+                if (index !== -1) ordersArray.splice(index, 1);
+                filterOrders();
+            }
+        });
     }
 
     function exportOrders() {
         alert('Export orders feature (Demo)');
     }
 
-
+    function printOrders() {
+        alert('Print orders feature (Demo)');
+    }
 
     function bulkDelete() {
         let selected = [];
@@ -947,9 +1012,72 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
             return;
         }
 
-        showAdminConfirm('Are you sure you want to delete ' + selected.length + ' products?' , () =>{
+        showAdminConfirm('Are you sure you want to delete ' + selected.length + ' orders?', async () => {
+            const success = await bulkDeleteFromDB(selected);
+            if (success) {
+                for (const id of selected) {
+                    const index = ordersArray.findIndex(o => o.id == id);
+                    if (index !== -1) ordersArray.splice(index, 1);
+                }
+                filterOrders();
+                const selectAll = document.getElementById('selectAll');
+                if (selectAll) selectAll.checked = false;
+            }
+        });
+    }
 
-        } );
+    function filterOrders() {
+        const status = document.getElementById('statusFilter').value;
+        const dateRange = document.getElementById('dateFilter').value;
+        const sortBy = document.getElementById('sortFilter').value;
+
+        filteredOrders = ordersArray.filter(order => {
+            let show = true;
+
+            if (status && order.status !== status) {
+                show = false;
+            }
+
+            if (dateRange && show) {
+                const orderDate = new Date(order.date);
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+
+                if (dateRange === 'today') {
+                    const orderDateStr = orderDate.toDateString();
+                    const todayStr = today.toDateString();
+                    if (orderDateStr !== todayStr) show = false;
+                } else if (dateRange === 'week') {
+                    const weekAgo = new Date(today);
+                    weekAgo.setDate(today.getDate() - 7);
+                    if (orderDate < weekAgo) show = false;
+                } else if (dateRange === 'month') {
+                    const monthAgo = new Date(today);
+                    monthAgo.setMonth(today.getMonth() - 1);
+                    if (orderDate < monthAgo) show = false;
+                }
+            }
+
+            return show;
+        });
+
+        if (sortBy) {
+            filteredOrders.sort((a, b) => {
+                if (sortBy === 'newest') {
+                    return new Date(b.date) - new Date(a.date);
+                } else if (sortBy === 'oldest') {
+                    return new Date(a.date) - new Date(b.date);
+                } else if (sortBy === 'amount-high') {
+                    return b.total - a.total;
+                } else if (sortBy === 'amount-low') {
+                    return a.total - b.total;
+                }
+                return 0;
+            });
+        }
+
+        currentPage = 1;
+        displayOrders();
     }
 
     function clearFilters() {
@@ -961,12 +1089,13 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
         currentPage = 1;
         displayOrders();
 
-        // تأثير بسيط
         const filterSection = document.querySelector('.filters-section');
-        filterSection.style.transform = 'scale(1.02)';
-        setTimeout(() => {
-            filterSection.style.transform = 'scale(1)';
-        }, 200);
+        if (filterSection) {
+            filterSection.style.transform = 'scale(1.02)';
+            setTimeout(() => {
+                filterSection.style.transform = 'scale(1)';
+            }, 200);
+        }
     }
 
     // تحديد الكل
@@ -978,77 +1107,21 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
 
     // تهيئة الصفحة
     document.addEventListener('DOMContentLoaded', function() {
-        console.log('Page loaded, displaying orders...');
         displayOrders();
 
-        // الفلاتر
         const filterSelects = document.querySelectorAll('.filter-select');
         filterSelects.forEach(select => {
             select.addEventListener('change', function() {
                 this.style.backgroundColor = 'var(--pink)';
                 this.style.color = '#000';
-
                 setTimeout(() => {
                     this.style.backgroundColor = 'var(--bg-color)';
                     this.style.color = 'var(--text-color)';
                 }, 200);
-
-                // تطبيق الفلترة
-                const status = document.getElementById('statusFilter').value;
-                const dateRange = document.getElementById('dateFilter').value;
-                const sortBy = document.getElementById('sortFilter').value;
-
-                filteredOrders = ordersArray.filter(order => {
-                    let show = true;
-
-                    if (status && order.status !== status) {
-                        show = false;
-                    }
-
-                    if (dateRange && show) {
-                        const orderDate = new Date(order.date);
-                        const today = new Date();
-                        today.setHours(0, 0, 0, 0);
-
-                        if (dateRange === 'today') {
-                            const orderDateStr = orderDate.toDateString();
-                            const todayStr = today.toDateString();
-                            if (orderDateStr !== todayStr) show = false;
-                        } else if (dateRange === 'week') {
-                            const weekAgo = new Date(today);
-                            weekAgo.setDate(today.getDate() - 7);
-                            if (orderDate < weekAgo) show = false;
-                        } else if (dateRange === 'month') {
-                            const monthAgo = new Date(today);
-                            monthAgo.setMonth(today.getMonth() - 1);
-                            if (orderDate < monthAgo) show = false;
-                        }
-                    }
-
-                    return show;
-                });
-
-                if (sortBy) {
-                    filteredOrders.sort((a, b) => {
-                        if (sortBy === 'newest') {
-                            return new Date(b.date) - new Date(a.date);
-                        } else if (sortBy === 'oldest') {
-                            return new Date(a.date) - new Date(b.date);
-                        } else if (sortBy === 'amount-high') {
-                            return b.total - a.total;
-                        } else if (sortBy === 'amount-low') {
-                            return a.total - b.total;
-                        }
-                        return 0;
-                    });
-                }
-
-                currentPage = 1;
-                displayOrders();
+                filterOrders();
             });
         });
 
-        // تأثيرات السيرش بار
         const searchInput = document.getElementById('searchInput');
         const searchBtn = document.getElementById('searchBtn');
         const addBtn = document.getElementById('addOrderBtn');
@@ -1088,7 +1161,6 @@ $paginatedGames = array_slice($orders, $offset, $perPage, true);
 <script>
     (function() {
         const themeSwitchMain = document.getElementById('themeSwitchSidebar');
-
         function applyTheme(isDark) {
             if (isDark) {
                 document.body.classList.add('dark-mode');

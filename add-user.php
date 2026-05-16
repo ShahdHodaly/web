@@ -1,9 +1,9 @@
 <?php
 // add-user.php
 session_start();
+require_once 'db.php';
 
-// تضمين مصفوفة المستخدمين
-require_once 'users-array.php';
+$pdo = getDB();
 
 // متغيرات النموذج
 $name = '';
@@ -12,9 +12,7 @@ $role = '';
 $status = 'active';
 $errors = [];
 $success = false;
-
-// حساب آخر ID للمستخدم الجديد
-$new_user_id = count($users) + 1;
+$new_user_id = null;
 
 // معالجة إرسال النموذج
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -38,42 +36,67 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = 'User role is required';
     }
 
-    // التحقق من عدم تكرار البريد الإلكتروني
-    foreach ($users as $user) {
-        if (strtolower($user['email']) === strtolower($email)) {
-            $errors[] = 'Email address already exists';
-            break;
-        }
+    // التحقق من أن الدور مسموح به
+    $allowed_roles = ['Customer', 'Admin'];
+    if (!in_array($role, $allowed_roles)) {
+        $errors[] = 'Invalid user role';
     }
 
-    // إذا لم يكن هناك أخطاء، احفظ المستخدم
+    // التحقق من أن الحالة مسموح بها
+    $allowed_status = ['active', 'inactive'];
+    if (!in_array($status, $allowed_status)) {
+        $errors[] = 'Invalid account status';
+    }
+
+    // التحقق من عدم تكرار البريد الإلكتروني في قاعدة البيانات
+    $stmt = $pdo->prepare("SELECT user_id FROM users WHERE email = ?");
+    $stmt->execute([$email]);
+    if ($stmt->fetch()) {
+        $errors[] = 'Email address already exists';
+    }
+
+    // إذا لم يكن هناك أخطاء، احفظ المستخدم في قاعدة البيانات
     if (empty($errors)) {
-        // إنشاء صورة avatar باستخدام UI Avatars
-        $avatar = 'https://ui-avatars.com/api/?name=' . urlencode($name) . '&background=F8BBD0&color=000&size=40';
+        try {
+            $pdo->beginTransaction();
 
-        // إنشاء المستخدم الجديد
-        $new_user = [
-            'name' => $name,
-            'email' => $email,
-            'role' => $role,
-            'status' => $status,
-            'joined' => date('Y-m-d'),
-            'orders' => 0,
-            'spent' => 0,
-            'avatar' => $avatar,
-            'last_login' => date('Y-m-d H:i:s')
-        ];
+            // إنشاء صورة avatar باستخدام UI Avatars
+            $avatar = 'https://ui-avatars.com/api/?name=' . urlencode($name) . '&background=F8BBD0&color=000&size=100';
 
-        // في التطبيق الحقيقي، ستضيفه إلى قاعدة البيانات
-        // للتجربة، نعرض رسالة نجاح فقط
+            // ✅ استخدام password_hash بدلاً من md5 (متوافق مع auth.php)
+            $defaultPassword = 'password123';
+            $hashedPassword = password_hash($defaultPassword, PASSWORD_BCRYPT);
 
-        $success = true;
+            $stmt = $pdo->prepare("
+                INSERT INTO users (name, email, password, role, status, avatar, created_at, last_login)
+                VALUES (?, ?, ?, ?::user_role, ?::user_status, ?, NOW(), NOW())
+                RETURNING user_id
+            ");
 
-        // إعادة تعيين النموذج
-        $name = '';
-        $email = '';
-        $role = '';
-        $status = 'active';
+            $stmt->execute([
+                    $name,
+                    $email,
+                    $hashedPassword,
+                    $role,
+                    $status,
+                    $avatar
+            ]);
+
+            $new_user_id = $stmt->fetchColumn();
+
+            $pdo->commit();
+            $success = true;
+
+            // إعادة تعيين النموذج
+            $name = '';
+            $email = '';
+            $role = '';
+            $status = 'active';
+
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            $errors[] = 'Database error: ' . $e->getMessage();
+        }
     }
 }
 ?>
@@ -126,6 +149,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: var(--secondary-text);
         }
 
+        .info-note {
+            background: rgba(248, 187, 208, 0.15);
+            border-radius: 12px;
+            padding: 12px 15px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            color: var(--secondary-text);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .info-note i {
+            color: var(--primary);
+            font-size: 16px;
+        }
+
         .form-group {
             margin-bottom: 25px;
         }
@@ -167,12 +206,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             display: flex;
             gap: 20px;
             align-items: center;
+            flex-wrap: wrap;
         }
         .status-option {
             display: flex;
             align-items: center;
             gap: 8px;
             cursor: pointer;
+            padding: 8px 16px;
+            border-radius: 40px;
+            background: var(--bg-color);
+            transition: all 0.3s ease;
+        }
+        .status-option:hover {
+            background: rgba(248, 187, 208, 0.2);
         }
         .status-option input {
             width: 18px;
@@ -257,6 +304,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             .admin-main { width: 100%; }
             .form-container { margin: 0 15px; }
             .form-buttons { flex-direction: column; }
+            .status-toggle { flex-direction: column; align-items: stretch; }
+            .status-option { justify-content: center; }
         }
     </style>
 </head>
@@ -274,10 +323,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <p>Create a new user account</p>
             </div>
 
-            <?php if ($success): ?>
+            <?php if ($success && $new_user_id): ?>
                 <div class="alert alert-success">
                     <i class="fa-solid fa-check-circle"></i>
-                    <span>User added successfully! <a href="users.php" style="color: #4CAF50;">View all users</a></span>
+                    <span>User added successfully!
+                        <a href="user-details.php?id=<?= $new_user_id ?>" style="color: #4CAF50;">View user</a> or
+                        <a href="users.php" style="color: #4CAF50;">view all users</a>
+                    </span>
                 </div>
             <?php endif; ?>
 
@@ -291,6 +343,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </ul>
                 </div>
             <?php endif; ?>
+
+            <div class="info-note">
+                <i class="fa-solid fa-info-circle"></i>
+                <span>New users will receive a default password: <strong>password123</strong>. They can change it after first login.</span>
+            </div>
 
             <div class="avatar-preview" id="avatarPreview">
                 <img src="https://ui-avatars.com/api/?name=User&background=F8BBD0&color=000&size=80" alt="Avatar Preview">
@@ -315,9 +372,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <select name="role" class="form-control" required>
                         <option value="" disabled <?= empty($role) ? 'selected' : '' ?>>Select a role</option>
                         <option value="Customer" <?= $role == 'Customer' ? 'selected' : '' ?>>Customer</option>
-                        <option value="Moderator" <?= $role == 'Moderator' ? 'selected' : '' ?>>Moderator</option>
                         <option value="Admin" <?= $role == 'Admin' ? 'selected' : '' ?>>Admin</option>
                     </select>
+                    <small style="color: var(--secondary-text); font-size: 12px;">
+                        <i class="fa-solid fa-shield"></i> Admins have full access to the dashboard
+                    </small>
                 </div>
 
                 <!-- Status -->
@@ -327,10 +386,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <label class="status-option">
                             <input type="radio" name="status" value="active" <?= $status == 'active' ? 'checked' : '' ?>>
                             <i class="fa-solid fa-circle" style="color: #4CAF50; font-size: 12px;"></i> Active
+                            <span style="font-size: 11px; color: var(--secondary-text);">(User can log in)</span>
                         </label>
                         <label class="status-option">
                             <input type="radio" name="status" value="inactive" <?= $status == 'inactive' ? 'checked' : '' ?>>
                             <i class="fa-solid fa-circle" style="color: #F44336; font-size: 12px;"></i> Inactive
+                            <span style="font-size: 11px; color: var(--secondary-text);">(User cannot log in)</span>
                         </label>
                     </div>
                 </div>
@@ -385,18 +446,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             alert('Please select a role');
             return false;
         }
+
+        // Email format validation
+        const emailPattern = /^[^\s@]+@([^\s@]+\.)+[^\s@]+$/;
+        if (!emailPattern.test(email)) {
+            e.preventDefault();
+            alert('Please enter a valid email address');
+            return false;
+        }
     });
 
-    // Search input effect
-    const searchInput = document.getElementById('searchInput');
-    if (searchInput) {
-        searchInput.addEventListener('focus', function() {
+    // Focus effects
+    const inputs = document.querySelectorAll('.form-control');
+    inputs.forEach(input => {
+        input.addEventListener('focus', function() {
             this.style.transform = 'translateY(-2px)';
         });
-        searchInput.addEventListener('blur', function() {
+        input.addEventListener('blur', function() {
             this.style.transform = 'translateY(0)';
         });
-    }
+    });
 </script>
 
 <script>

@@ -1,14 +1,57 @@
 <?php
 // reviews.php
 session_start();
+require_once 'db.php';
 
-// تضمين مصفوفة المراجعات
-require_once 'reviews-array.php';
+$pdo = getDB();
+
+// جلب جميع المراجعات من قاعدة البيانات مع معلومات المستخدم والمنتج
+$stmt = $pdo->query("
+    SELECT 
+        r.review_id,
+        r.rating,
+        r.comment,
+        r.status::text as status,
+        r.helpful_count,
+        r.created_at,
+        u.name as customer_name,
+        u.email as customer_email,
+        u.avatar as customer_avatar,
+        p.name as product_name,
+        p.image as product_image
+    FROM reviews r
+    JOIN users u ON r.user_id = u.user_id
+    JOIN products p ON r.product_id = p.product_id
+    ORDER BY r.created_at DESC
+");
+$reviewsFromDB = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// تحويل المراجعات إلى نفس تنسيق المصفوفة القديمة للتوافق مع JavaScript
+$reviews = [];
+foreach ($reviewsFromDB as $review) {
+    $reviews[$review['review_id']] = [
+            'id' => $review['review_id'],
+            'product_name' => $review['product_name'],
+            'product_image' => $review['product_image'] ?: 'placeholder.png',
+            'customer_name' => $review['customer_name'],
+            'customer_avatar' => $review['customer_avatar'] ?: 'https://ui-avatars.com/api/?name=' . urlencode($review['customer_name']) . '&background=F8BBD0&color=000&size=40',
+            'rating' => (int)$review['rating'],
+            'comment' => $review['comment'],
+            'date' => $review['created_at'],
+            'status' => $review['status'],
+            'helpful_count' => (int)$review['helpful_count']
+    ];
+}
+
+// حساب الإحصائيات من قاعدة البيانات
+$totalReviews = count($reviews);
+$approvedReviews = count(array_filter($reviews, fn($r) => $r['status'] === 'approved'));
+$pendingReviews = count(array_filter($reviews, fn($r) => $r['status'] === 'pending'));
+$avgRating = $totalReviews > 0 ? round(array_sum(array_column($reviews, 'rating')) / $totalReviews, 1) : 0;
 
 // Pagination
 $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
 $perPage = 5;
-$totalReviews = count($reviews);
 $totalPages = ceil($totalReviews / $perPage);
 $offset = ($page - 1) * $perPage;
 $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
@@ -30,12 +73,11 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="admin.css">
     <style>
-        /* تنسيقاتك الموجودة */
+        /* جميع التنسيقات كما هي في الكود الأصلي */
         body { background-color: var(--bg-color); font-family: 'Poppins', sans-serif; }
         .admin-wrapper { display: flex; min-height: 100vh; }
         .admin-main { flex: 1; width: calc(100% - 280px); padding: 30px 35px; background-color: var(--bg-color); overflow-y: auto; box-sizing: border-box; }
 
-        /* Stats Cards */
         .stats-mini {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
@@ -58,30 +100,18 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
             box-shadow: 0 8px 25px var(--shadow);
             border-color: var(--pink);
         }
-
-        .stat-mini-card:nth-child(1){
-            border-left:4px solid #ff9aa2;
-        }
-        .stat-mini-card:nth-child(2){
-            border-left:4px solid #a0c4ff;
-        }
-        .stat-mini-card:nth-child(3){
-            border-left:4px solid #bdb2ff;
-        }
-        .stat-mini-card:nth-child(4){
-            border-left:4px solid #ffd6a5;
-        }
-
+        .stat-mini-card:nth-child(1) { border-left:4px solid #ff9aa2; }
+        .stat-mini-card:nth-child(2) { border-left:4px solid #a0c4ff; }
+        .stat-mini-card:nth-child(3) { border-left:4px solid #bdb2ff; }
+        .stat-mini-card:nth-child(4) { border-left:4px solid #ffd6a5; }
         .stat-mini-info h4 { font-size: 14px; color: var(--secondary-text); margin-bottom: 5px; }
         .stat-mini-info .value { font-size: 28px; font-weight: 700; color: var(--text-color); }
         .stat-mini-icon { font-size: 40px; color: var(--primary); opacity: 0.7; }
-
         .stat-mini-card:hover .stat-mini-icon {
             transform: scale(1.2) rotate(5deg);
             color: var(--pink);
         }
 
-        /* Filters Section */
         .filters-section {
             background: var(--card-bg);
             padding: 20px;
@@ -119,7 +149,6 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
             box-shadow: 0 0 0 3px rgba(248, 187, 208, 0.3);
         }
 
-        /* Table */
         .table-container {
             background: var(--card-bg);
             padding: 25px;
@@ -149,7 +178,6 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
             background-color: rgba(248, 187, 208, 0.1);
         }
 
-        /* Product Info */
         .product-info {
             display: flex;
             align-items: center;
@@ -166,7 +194,6 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
             transform: scale(1.1) rotate(5deg);
         }
 
-        /* Customer Info */
         .customer-info {
             display: flex;
             align-items: center;
@@ -196,7 +223,6 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
             background: var(--pink);
         }
 
-        /* Rating Stars */
         .rating-stars {
             display: flex;
             gap: 3px;
@@ -205,7 +231,6 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
             font-size: 14px;
         }
 
-        /* Status Badges */
         .status-badge {
             padding: 5px 12px;
             border-radius: 30px;
@@ -217,7 +242,6 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
         .status-approved { background: rgba(76, 175, 80, 0.2); color: #4CAF50; }
         .status-pending { background: rgba(255, 152, 0, 0.2); color: #FF9800; }
 
-        /* Comment Preview */
         .comment-preview {
             max-width: 250px;
             white-space: nowrap;
@@ -227,7 +251,6 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
             font-size: 13px;
         }
 
-        /* Action Buttons */
         .action-buttons {
             display: flex;
             gap: 8px;
@@ -244,8 +267,6 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
             transition: all 0.3s ease;
             border: none;
             cursor: pointer;
-            position: relative;
-            overflow: hidden;
         }
         .action-btn:hover {
             background: var(--pink);
@@ -253,16 +274,11 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
             transform: translateY(-3px) scale(1.1);
             box-shadow: 0 5px 15px var(--shadow);
         }
-        .action-btn:active {
-            transform: translateY(-1px) scale(1.05);
-        }
         .action-btn.view:hover { background: var(--lavender); }
         .action-btn.approve:hover { background: #4CAF50; color: white; }
         .action-btn.reject:hover { background: #ff6b6b; color: white; }
-        .action-btn.reply:hover { background: var(--primary); color: white; }
         .action-btn.delete:hover { background: #ff6b6b; color: white; }
 
-        /* Pagination */
         .pagination-section {
             display: flex;
             justify-content: space-between;
@@ -306,28 +322,14 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
         }
 
         @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
         }
-
         @keyframes slideInRight {
-            from {
-                opacity: 0;
-                transform: translateX(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateX(0);
-            }
+            from { opacity: 0; transform: translateX(20px); }
+            to { opacity: 1; transform: translateX(0); }
         }
 
-        /* تأثيرات للسيرش بار */
         .search-container {
             flex: 1;
             min-width: 300px;
@@ -351,13 +353,6 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
             box-shadow: 0 8px 25px var(--shadow);
             transform: translateY(-2px);
         }
-        .search-input::placeholder {
-            color: var(--secondary-text);
-            transition: opacity 0.3s ease;
-        }
-        .search-input:focus::placeholder {
-            opacity: 0.5;
-        }
         .search-icon {
             position: absolute;
             left: 20px;
@@ -365,7 +360,6 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
             transform: translateY(-50%);
             color: var(--secondary-text);
             z-index: 10;
-            transition: all 0.3s ease;
         }
         .search-input:focus + .search-icon {
             color: var(--primary);
@@ -388,40 +382,12 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
             display: flex;
             align-items: center;
             gap: 8px;
-            overflow: hidden;
         }
         .search-btn:hover {
             background: var(--lavender);
             transform: translateY(-50%) scale(1.05);
-            box-shadow: 0 5px 20px rgba(0,0,0,0.2);
-        }
-        .search-btn:active {
-            transform: translateY(-50%) scale(0.95);
-        }
-        .search-btn i {
-            transition: transform 0.3s ease;
-        }
-        .search-btn:hover i {
-            transform: translateX(8px);
         }
 
-        /* تأثيرات للفلاتر */
-        .filters-section h3 i {
-            transition: transform 0.3s ease;
-        }
-        .filters-section:hover h3 i {
-            transform: rotate(90deg);
-        }
-        .clear-filters-btn {
-            transition: all 0.3s ease !important;
-        }
-        .clear-filters-btn:hover {
-            background: var(--lavender) !important;
-            transform: scale(1.05);
-            box-shadow: 0 5px 15px var(--shadow);
-        }
-
-        /* Helpful Count */
         .helpful-count {
             display: flex;
             align-items: center;
@@ -444,7 +410,6 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
 </head>
 <body>
 <div class="admin-wrapper">
-    <!-- sidebar -->
     <?php include 'includes/sidebar.php'; ?>
 
     <main class="admin-main">
@@ -454,44 +419,9 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
                 <h1 style="margin-bottom: 5px;">Reviews Management</h1>
                 <p style="color: var(--secondary-text);">Manage customer reviews and ratings</p>
             </div>
-            <div style="display: flex; gap: 12px;">
-                <button class="btn-primary" style="background: var(--lavender); color: #000; transition: all 0.3s ease;" onclick="exportReviews()" onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
-                    <i class="fa-solid fa-download"></i> Export
-                </button>
-                <button class="btn-primary" style="background: var(--pink); color: #000; transition: all 0.3s ease;" onclick="settingsReviews()" onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
-                    <i class="fa-solid fa-gear"></i> Settings
-                </button>
-            </div>
-        </div>
-
-        <!-- Search Bar -->
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; gap: 20px; flex-wrap: wrap;">
-            <!-- Search Bar -->
-            <div class="search-container">
-                <form action="search-reviews.php" method="GET" style="width: 100%;">
-                    <div style="position: relative; width: 100%;">
-                        <i class="fa-solid fa-magnifying-glass search-icon"></i>
-                        <input type="text"
-                               name="q"
-                               class="search-input"
-                               placeholder="Search by product, customer, comment..."
-                               id="searchInput">
-                        <button type="submit" class="search-btn" id="searchBtn">
-                            <i class="fa-solid fa-arrow-right"></i> Search
-                        </button>
-                    </div>
-                </form>
-            </div>
         </div>
 
         <!-- Stats Cards -->
-        <?php
-        // حساب الإحصائيات
-        $totalReviews = count($reviews);
-        $approvedReviews = count(array_filter($reviews, fn($r) => $r['status'] === 'approved'));
-        $pendingReviews = count(array_filter($reviews, fn($r) => $r['status'] === 'pending'));
-        $avgRating = $totalReviews > 0 ? round(array_sum(array_column($reviews, 'rating')) / $totalReviews, 1) : 0;
-        ?>
         <div class="stats-mini">
             <div class="stat-mini-card">
                 <div class="stat-mini-info">
@@ -571,9 +501,7 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
             <table class="reviews-table">
                 <thead>
                 <tr>
-                    <th style="width: 50px;">
-                        <input type="checkbox" style="transform: scale(1.2); cursor: pointer;" id="selectAll">
-                    </th>
+                    <th style="width: 50px;"><input type="checkbox" style="transform: scale(1.2); cursor: pointer;" id="selectAll"></th>
                     <th>Product</th>
                     <th>Customer</th>
                     <th>Rating</th>
@@ -581,6 +509,7 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
                     <th>Date</th>
                     <th>Status</th>
                     <th>Actions</th>
+                </tr>
                 </thead>
                 <tbody id="reviewsTableBody">
                 <!-- المراجعات رح تتحط هنا عن طريق JavaScript -->
@@ -600,163 +529,19 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
 
         <!-- Quick Actions -->
         <div style="display: flex; gap: 15px; justify-content: flex-end; margin-top: 20px;">
-            <button class="btn-primary" style="background: var(--lavender); color: #000; transition: all 0.3s ease;" onclick="bulkApprove()" onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
+            <button class="btn-primary" style="background: var(--lavender); color: #000;" onclick="bulkApprove()">
                 <i class="fa-solid fa-check-circle"></i> Bulk Approve
-            </button>
-            <button class="btn-primary" style="background: #ff6b6b; transition: all 0.3s ease;" onclick="bulkDelete()" onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
-                <i class="fa-solid fa-trash-can"></i> Bulk Delete
             </button>
         </div>
     </main>
 </div>
 
 <script>
-
-    function showAdminConfirm(message, onConfirm) {
-        // 1. إنشاء overlay الخلفية
-        const overlay = document.createElement('div');
-        overlay.id = 'admin-confirm-overlay';
-        overlay.style.position = 'fixed';
-        overlay.style.top = '0';
-        overlay.style.left = '0';
-        overlay.style.width = '100%';
-        overlay.style.height = '100%';
-        overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.6)';
-        overlay.style.backdropFilter = 'blur(3px)';
-        overlay.style.zIndex = '9998';
-        overlay.style.display = 'flex';
-        overlay.style.alignItems = 'center';
-        overlay.style.justifyContent = 'center';
-        overlay.style.opacity = '0';
-        overlay.style.transition = 'opacity 0.3s ease';
-
-        // 2. إنشاء نافذة الـ Popup
-        const popup = document.createElement('div');
-        popup.id = 'admin-confirm-popup';
-        popup.style.backgroundColor = 'var(--card-bg, #ffffff)';
-        popup.style.color = 'var(--text-color, #333)';
-        popup.style.borderRadius = '28px';
-        popup.style.padding = '28px 24px';
-        popup.style.maxWidth = '420px';
-        popup.style.width = '90%';
-        popup.style.boxShadow = '0 25px 45px rgba(0,0,0,0.25)';
-        popup.style.textAlign = 'center';
-        popup.style.fontFamily = "'Poppins', sans-serif";
-        popup.style.transform = 'scale(0.9)';
-        popup.style.transition = 'transform 0.25s ease';
-        popup.style.border = '1px solid var(--pink, #F8BBD0)';
-
-        // محتوى البوب أب
-        popup.innerHTML = `
-        <div style="font-size: 58px; margin-bottom: 12px;">⚠️</div>
-        <h3 style="font-size: 24px; font-weight: 600; margin-bottom: 12px;">Are you sure?</h3>
-        <p style="font-size: 16px; color: var(--secondary-text, #555); margin-bottom: 28px; line-height: 1.5;">${message}</p>
-        <div style="display: flex; gap: 15px; justify-content: center;">
-            <button id="confirm-cancel-btn" style="background: transparent; border: 2px solid var(--pink, #F8BBD0); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer; color: var(--text-color, #333); transition: all 0.2s;">Cancel</button>
-            <button id="confirm-ok-btn" style="background: #d9534f; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer; box-shadow: 0 4px 8px rgba(217,83,79,0.3); transition: all 0.2s;">Delete</button>
-        </div>
-    `;
-
-        overlay.appendChild(popup);
-        document.body.appendChild(overlay);
-
-        // ظهور الأنيميشن
-        setTimeout(() => {
-            overlay.style.opacity = '1';
-            popup.style.transform = 'scale(1)';
-        }, 10);
-
-        // إزالة البوب أب
-        function closePopup() {
-            overlay.style.opacity = '0';
-            popup.style.transform = 'scale(0.9)';
-            setTimeout(() => {
-                if (overlay && overlay.parentNode) overlay.remove();
-            }, 250);
-        }
-
-        // دالة عرض رسالة النجاح (toast منتصف الصفحة)
-        function showSuccessToast() {
-            const toast = document.createElement('div');
-            toast.id = 'admin-success-toast';
-            toast.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 12px;">
-
-                <div>
-                    <strong style="font-size: 18px;">Removed from the system!</strong>
-
-                </div>
-            </div>
-        `;
-            toast.style.position = 'fixed';
-            toast.style.top = '50%';
-            toast.style.left = '50%';
-            toast.style.transform = 'translate(-50%, -50%) scale(0.9)';
-            toast.style.backgroundColor = 'var(--card-bg, #fff)';
-            toast.style.color = 'var(--text-color, #333)';
-            toast.style.padding = '18px 28px';
-            toast.style.borderRadius = '60px';
-            toast.style.boxShadow = '0 20px 35px rgba(0,0,0,0.2)';
-            toast.style.zIndex = '10000';
-            toast.style.fontFamily = "'Poppins', sans-serif";
-            toast.style.borderRight = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderLeft = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderTop = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderBottom = '4px solid var(--pink, #F8BBD0)';
-            toast.style.backdropFilter = 'blur(12px)';
-            toast.style.opacity = '0';
-            toast.style.transition = 'all 0.25s cubic-bezier(0.34, 1.2, 0.64, 1)';
-            toast.style.fontWeight = '500';
-            toast.style.textAlign = 'center';
-            toast.style.minWidth = '280px';
-            toast.style.boxSizing = 'border-box';
-
-            document.body.appendChild(toast);
-
-            setTimeout(() => {
-                toast.style.opacity = '1';
-                toast.style.transform = 'translate(-50%, -50%) scale(1)';
-            }, 20);
-
-            // إخفاء الرسالة بعد 2.5 ثانية
-            setTimeout(() => {
-                toast.style.opacity = '0';
-                toast.style.transform = 'translate(-50%, -50%) scale(0.95)';
-                setTimeout(() => {
-                    if (toast && toast.parentNode) toast.remove();
-                }, 250);
-            }, 2500);
-        }
-
-        // أحداث الأزرار
-        const cancelBtn = popup.querySelector('#confirm-cancel-btn');
-        const confirmBtn = popup.querySelector('#confirm-ok-btn');
-
-        cancelBtn.addEventListener('click', () => {
-            closePopup();
-        });
-
-        confirmBtn.addEventListener('click', () => {
-            // ✅ بدون حذف فعلي – فقط استدعاء callback إذا أردت تنفيذ شيء لاحقاً (مثل تحديث واجهة)
-            if (onConfirm && typeof onConfirm === 'function') {
-                onConfirm();  // هون بتقدر تعمل أي شيء زي تحديث UI بدون حذف حقيقي
-            }
-            closePopup();
-            // عرض رسالة النجاح الجميلة في منتصف الصفحة
-            showSuccessToast();
-        });
-
-        // إغلاق عند الضغط على overlay
-        overlay.addEventListener('click', (e) => {
-            if (e.target === overlay) closePopup();
-        });
-    }
-
     // ===== بيانات المراجعات من PHP إلى JavaScript =====
     const allReviews = <?php echo json_encode($reviews); ?>;
-    const reviewsArray = Object.entries(allReviews).map(([id, review]) => {
+    const reviewsArray = Object.values(allReviews).map(review => {
         return {
-            id: id,
+            id: review.id,
             product_name: review.product_name,
             product_image: review.product_image,
             customer_name: review.customer_name,
@@ -772,18 +557,22 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
     let currentPage = <?= $page ?>;
     let perPage = <?= $perPage ?>;
     let filteredReviews = [...reviewsArray];
-    let totalFilteredReviews = filteredReviews.length;
 
-    // ===== دوال عرض المراجعات =====
     function displayReviews() {
         const tbody = document.getElementById('reviewsTableBody');
         const start = (currentPage - 1) * perPage;
         const end = start + perPage;
         const paginatedReviews = filteredReviews.slice(start, end);
 
+        if (paginatedReviews.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; padding: 50px;">No reviews found</td></tr>`;
+            updatePaginationInfo();
+            updatePaginationControls();
+            return;
+        }
+
         let html = '';
         paginatedReviews.forEach(review => {
-            // توليد النجوم
             let stars = '';
             for (let i = 1; i <= 5; i++) {
                 if (i <= review.rating) {
@@ -793,72 +582,49 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
                 }
             }
 
-            // تنسيق التاريخ
             const date = new Date(review.date);
             const formattedDate = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
             const formattedTime = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
             html += `
                 <tr data-id="${review.id}" data-status="${review.status}" data-rating="${review.rating}">
-                    <td><input type="checkbox" class="review-checkbox" style="transform: scale(1.2); cursor: pointer;" value="${review.id}">
+                    <td><input type="checkbox" class="review-checkbox" style="transform: scale(1.2); cursor: pointer;" value="${review.id}"></td>
                     <td>
                         <div class="product-info">
-                            <img src="images/${review.product_image}" alt="${review.product_name}" class="product-img">
+                            <img src="${review.product_image}" alt="${review.product_name}" class="product-img" onerror="this.src='images/placeholder.png'">
                             <div>
-                                <strong>${review.product_name}</strong>
+                                <strong>${escapeHtml(review.product_name)}</strong>
                                 <div style="font-size: 12px; color: var(--secondary-text);">ID: #${review.id}</div>
                             </div>
                         </div>
-
+                    </td>
                     <td>
                         <div class="customer-info">
                             <div class="customer-avatar">
-                                <img src="${review.customer_avatar}" alt="${review.customer_name}">
+                                <img src="${review.customer_avatar}" alt="${review.customer_name}" onerror="this.src='images/teddy4.png'">
                             </div>
                             <div>
-                                <div style="font-weight: 600;">${review.customer_name}</div>
+                                <div style="font-weight: 600;">${escapeHtml(review.customer_name)}</div>
                                 <div class="helpful-count">
                                     <i class="fa-regular fa-thumbs-up"></i> ${review.helpful_count} found helpful
                                 </div>
                             </div>
                         </div>
-
-                    <td style="text-align: center;">
-                        <div class="rating-stars" style="justify-content: center;">
-                            ${stars}
-                        </div>
-
-                    <td style="max-width: 250px;">
-                        <div class="comment-preview" title="${review.comment.replace(/"/g, '&quot;')}">
-                            ${review.comment.substring(0, 80)}${review.comment.length > 80 ? '...' : ''}
-                        </div>
-
-                    <td style="white-space: nowrap;">
-                        <div>${formattedDate}</div>
-                        <div style="font-size: 11px; color: var(--secondary-text);">${formattedTime}</div>
-
-                    <td>
-                        <span class="status-badge status-${review.status}">${review.status.charAt(0).toUpperCase() + review.status.slice(1)}</span>
-
+                    </td>
+                    <td style="text-align: center;"><div class="rating-stars" style="justify-content: center;">${stars}</div></td>
+                    <td style="max-width: 250px;"><div class="comment-preview" title="${escapeHtml(review.comment)}">${escapeHtml(review.comment.substring(0, 80))}${review.comment.length > 80 ? '...' : ''}</div></td>
+                    <td style="white-space: nowrap;"><div>${formattedDate}</div><div style="font-size: 11px; color: var(--secondary-text);">${formattedTime}</div></td>
+                    <td><span class="status-badge status-${review.status}">${review.status.charAt(0).toUpperCase() + review.status.slice(1)}</span></td>
                     <td>
                         <div class="action-buttons">
-                            <button class="action-btn view" onclick="viewReview(${review.id})" title="View">
-                                <i class="fa-solid fa-eye"></i>
-                            </button>
+                            <button class="action-btn view" onclick="viewReview(${review.id})" title="View"><i class="fa-solid fa-eye"></i></button>
                             ${review.status === 'pending' ? `
-                                <button class="action-btn approve" onclick="approveReview(${review.id})" title="Approve">
-                                    <i class="fa-solid fa-check"></i>
-                                </button>
-                                <button class="action-btn reject" onclick="rejectReview(${review.id})" title="Reject">
-                                    <i class="fa-solid fa-times"></i>
-                                </button>
+                                <button class="action-btn approve" onclick="approveReview(${review.id})" title="Approve"><i class="fa-solid fa-check"></i></button>
+                                <button class="action-btn reject" onclick="rejectReview(${review.id})" title="Reject"><i class="fa-solid fa-times"></i></button>
                             ` : ''}
-
-                            <button class="action-btn delete" onclick="deleteReview(${review.id})" title="Delete">
-                                <i class="fa-solid fa-trash"></i>
-                            </button>
+                            <button class="action-btn delete" onclick="deleteReview(${review.id})" title="Delete"><i class="fa-solid fa-trash"></i></button>
                         </div>
-
+                    </td>
                 </tr>
             `;
         });
@@ -866,6 +632,12 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
         tbody.innerHTML = html;
         updatePaginationInfo();
         updatePaginationControls();
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     function updatePaginationInfo() {
@@ -880,14 +652,12 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
         const paginationDiv = document.getElementById('paginationControls');
         let html = '';
 
-        // Previous button
         if (currentPage > 1) {
             html += `<a href="#" onclick="changePage(${currentPage - 1}); return false;" class="page-item"><i class="fa-solid fa-chevron-left"></i></a>`;
         } else {
             html += `<span class="page-item disabled"><i class="fa-solid fa-chevron-left"></i></span>`;
         }
 
-        // Page numbers
         for (let i = 1; i <= totalPages; i++) {
             if (i === currentPage) {
                 html += `<span class="page-item active">${i}</span>`;
@@ -896,7 +666,6 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
             }
         }
 
-        // Next button
         if (currentPage < totalPages) {
             html += `<a href="#" onclick="changePage(${currentPage + 1}); return false;" class="page-item"><i class="fa-solid fa-chevron-right"></i></a>`;
         } else {
@@ -911,124 +680,104 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
         displayReviews();
     }
 
-    // ===== دوال الفلترة =====
     function filterReviews() {
         const status = document.getElementById('statusFilter').value;
         const rating = document.getElementById('ratingFilter').value;
         const sortBy = document.getElementById('sortFilter').value;
 
-        // تطبيق الفلترة
         filteredReviews = reviewsArray.filter(review => {
             let showReview = true;
-
-            // فلترة حسب الحالة
-            if (status && review.status !== status) {
-                showReview = false;
-            }
-
-            // فلترة حسب التقييم
-            if (rating && showReview) {
-                if (review.rating < parseInt(rating)) {
-                    showReview = false;
-                }
-            }
-
+            if (status && review.status !== status) showReview = false;
+            if (rating && showReview && review.rating < parseInt(rating)) showReview = false;
             return showReview;
         });
 
-        // تطبيق الترتيب
         if (sortBy) {
             filteredReviews.sort((a, b) => {
-                if (sortBy === 'newest') {
-                    return new Date(b.date) - new Date(a.date);
-                } else if (sortBy === 'oldest') {
-                    return new Date(a.date) - new Date(b.date);
-                } else if (sortBy === 'rating-high') {
-                    return b.rating - a.rating;
-                } else if (sortBy === 'rating-low') {
-                    return a.rating - b.rating;
-                } else if (sortBy === 'helpful') {
-                    return b.helpful_count - a.helpful_count;
-                }
+                if (sortBy === 'newest') return new Date(b.date) - new Date(a.date);
+                if (sortBy === 'oldest') return new Date(a.date) - new Date(b.date);
+                if (sortBy === 'rating-high') return b.rating - a.rating;
+                if (sortBy === 'rating-low') return a.rating - b.rating;
+                if (sortBy === 'helpful') return b.helpful_count - a.helpful_count;
                 return 0;
             });
         }
 
-        // إعادة تعيين الصفحة الحالية
         currentPage = 1;
-
-        // عرض المراجعات المفلترة
         displayReviews();
     }
 
-    // ===== تأثيرات السيرش بار =====
     document.addEventListener('DOMContentLoaded', function() {
-        const searchInput = document.getElementById('searchInput');
-        const searchBtn = document.getElementById('searchBtn');
+        displayReviews();
 
-        if (searchInput) {
-            searchInput.addEventListener('focus', function() {
-                this.style.transform = 'translateY(-2px)';
-            });
-
-            searchInput.addEventListener('blur', function() {
-                this.style.transform = 'translateY(0)';
-            });
-
-            searchInput.addEventListener('input', function() {
-                if (this.value.length > 0) {
-                    searchBtn.style.background = 'var(--lavender)';
-                    searchBtn.querySelector('i').style.transform = 'translateX(8px)';
-                } else {
-                    searchBtn.style.background = 'var(--primary)';
-                    searchBtn.querySelector('i').style.transform = 'translateX(0)';
-                }
-            });
-        }
-
-        // إضافة تأثيرات للفلاتر
-        const filterSelects = document.querySelectorAll('.filter-select');
-        filterSelects.forEach(select => {
-            select.addEventListener('change', function() {
-                this.style.backgroundColor = 'var(--pink)';
-                this.style.color = '#000';
-                setTimeout(() => {
-                    this.style.backgroundColor = 'var(--bg-color)';
-                    this.style.color = 'var(--text-color)';
-                }, 200);
-            });
-        });
-
-        // تشغيل الفلترة عند تحميل الصفحة
-        filterReviews();
+        document.getElementById('statusFilter')?.addEventListener('change', filterReviews);
+        document.getElementById('ratingFilter')?.addEventListener('change', filterReviews);
+        document.getElementById('sortFilter')?.addEventListener('change', filterReviews);
     });
 
-    // ===== ربط الفلاتر =====
-    document.getElementById('statusFilter')?.addEventListener('change', filterReviews);
-    document.getElementById('ratingFilter')?.addEventListener('change', filterReviews);
-    document.getElementById('sortFilter')?.addEventListener('change', filterReviews);
-
-    // ===== دوال مساعدة =====
     function clearFilters() {
-        document.querySelectorAll('.filter-select').forEach(select => select.value = '');
+        document.getElementById('statusFilter').value = '';
+        document.getElementById('ratingFilter').value = '';
+        document.getElementById('sortFilter').value = '';
         filterReviews();
-
-        // تأثير بسيط
-        const filterSection = document.querySelector('.filters-section');
-        filterSection.style.transform = 'scale(1.02)';
-        setTimeout(() => {
-            filterSection.style.transform = 'scale(1)';
-        }, 200);
     }
 
-    // وظائف الأزرار
     function viewReview(id) {
         window.location.href = 'review-details.php?id=' + id;
     }
 
-    // ================== دالة عرض تأكيد مخصصة (مثل showAdminConfirm) ==================
-    function showConfirmPopup(message, onConfirm, actionName = 'item') {
-        // إنشاء overlay
+    async function updateReviewStatus(reviewId, newStatus) {
+        try {
+            const response = await fetch('update-review-status.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `review_id=${reviewId}&status=${newStatus}`
+            });
+            const result = await response.json();
+            return result.success;
+        } catch (error) {
+            console.error('Error:', error);
+            return false;
+        }
+    }
+
+    async function deleteReviewFromDB(reviewId) {
+        try {
+            const response = await fetch('delete-review.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `review_id=${reviewId}`
+            });
+            const result = await response.json();
+            return result.success;
+        } catch (error) {
+            console.error('Error:', error);
+            return false;
+        }
+    }
+
+    // ===== دوال الحذف الجماعي والموافقة الجماعية =====
+    async function bulkApproveFromDB(reviewIds) {
+        try {
+            const response = await fetch('bulk-approve-reviews.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ review_ids: reviewIds })
+            });
+            const result = await response.json();
+            return result;
+        } catch (error) {
+            console.error('Error:', error);
+            return { success: false, message: 'Network error' };
+        }
+    }
+
+
+
+    // ===== دالة showConfirmPopup =====
+    function showConfirmPopup(message, onConfirm, successMessage) {
         const overlay = document.createElement('div');
         overlay.style.position = 'fixed';
         overlay.style.top = '0';
@@ -1044,7 +793,6 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
         overlay.style.opacity = '0';
         overlay.style.transition = 'opacity 0.3s ease';
 
-        // نافذة popup
         const popup = document.createElement('div');
         popup.style.backgroundColor = 'var(--card-bg, #ffffff)';
         popup.style.color = 'var(--text-color, #333)';
@@ -1060,13 +808,14 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
         popup.style.border = '1px solid var(--pink, #F8BBD0)';
 
         popup.innerHTML = `
-
-        <p style="font-size: 16px; color: var(--secondary-text, #555); margin-bottom: 28px; line-height: 1.5;">${message}</p>
-        <div style="display: flex; gap: 15px; justify-content: center;">
-            <button id="popup-cancel-btn" style="background: transparent; border: 2px solid var(--pink, #F8BBD0); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer; color: var(--text-color, #333);">Cancel</button>
-            <button id="popup-confirm-btn" style="background: #d9534f; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer; box-shadow: 0 4px 8px rgba(217,83,79,0.3);">Yes</button>
-        </div>
-    `;
+            <div style="font-size: 48px; margin-bottom: 10px;">⚠️</div>
+            <h3 style="font-size: 22px; font-weight: 600; margin-bottom: 10px;">Confirm Action</h3>
+            <p style="font-size: 15px; color: var(--secondary-text); margin-bottom: 25px;">${message}</p>
+            <div style="display: flex; gap: 15px; justify-content: center;">
+                <button id="popup-cancel-btn" style="background: transparent; border: 2px solid var(--pink); padding: 10px 24px; border-radius: 40px; font-weight: 600; cursor: pointer;">Cancel</button>
+                <button id="popup-confirm-btn" style="background: #4CAF50; border: none; padding: 10px 28px; border-radius: 40px; font-weight: 600; color: white; cursor: pointer;">Confirm</button>
+            </div>
+        `;
 
         overlay.appendChild(popup);
         document.body.appendChild(overlay);
@@ -1082,158 +831,209 @@ $paginatedReviews = array_slice($reviews, $offset, $perPage, true);
             setTimeout(() => overlay.remove(), 250);
         }
 
-        // دالة عرض رسالة نجاح (toast)
-        function showSuccessToast(successMessage) {
+        function showToast(msg, isSuccess = true) {
             const toast = document.createElement('div');
-            toast.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 12px;">
-
-                <div>
-                    <strong style="font-size: 18px;">${successMessage}</strong>
-                    <div style="font-size: 13px; opacity: 0.9;">${actionName}</div>
-                </div>
-            </div>
-        `;
+            toast.innerHTML = `<div style="display: flex; align-items: center; gap: 12px;"><i class="fa-solid fa-${isSuccess ? 'check-circle' : 'exclamation-triangle'}" style="font-size: 24px; color: ${isSuccess ? '#4CAF50' : '#f44336'}"></i><div><strong>${msg}</strong></div></div>`;
             toast.style.position = 'fixed';
             toast.style.top = '50%';
             toast.style.left = '50%';
-            toast.style.transform = 'translate(-50%, -50%) scale(0.9)';
-            toast.style.backgroundColor = 'var(--card-bg, #fff)';
-            toast.style.color = 'var(--text-color, #333)';
-            toast.style.padding = '18px 28px';
-            toast.style.borderRadius = '60px';
+            toast.style.transform = 'translate(-50%, -50%)';
+            toast.style.backgroundColor = 'var(--card-bg)';
+            toast.style.padding = '15px 25px';
+            toast.style.borderRadius = '50px';
             toast.style.boxShadow = '0 20px 35px rgba(0,0,0,0.2)';
             toast.style.zIndex = '10000';
             toast.style.fontFamily = "'Poppins', sans-serif";
-            toast.style.borderRight = '4px solid var(--pink, #F8BBD0)';
-            toast.style.borderLeft = '4px solid var(--pink, #F8BBD0)';
+            toast.style.border = `2px solid ${isSuccess ? '#4CAF50' : '#f44336'}`;
             toast.style.opacity = '0';
-            toast.style.transition = 'all 0.25s cubic-bezier(0.34, 1.2, 0.64, 1)';
-            toast.style.minWidth = '280px';
+            toast.style.transition = 'all 0.25s ease';
             document.body.appendChild(toast);
-
-            setTimeout(() => {
-                toast.style.opacity = '1';
-                toast.style.transform = 'translate(-50%, -50%) scale(1)';
-            }, 20);
-
+            setTimeout(() => toast.style.opacity = '1', 20);
             setTimeout(() => {
                 toast.style.opacity = '0';
-                toast.style.transform = 'translate(-50%, -50%) scale(0.95)';
                 setTimeout(() => toast.remove(), 250);
             }, 2500);
         }
 
-        document.getElementById('popup-cancel-btn').onclick = () => closePopup();
-        document.getElementById('popup-confirm-btn').onclick = () => {
-            if (onConfirm && typeof onConfirm === 'function') onConfirm();
+        document.getElementById('popup-cancel-btn').onclick = closePopup;
+        document.getElementById('popup-confirm-btn').onclick = async () => {
+            if (onConfirm) await onConfirm();
             closePopup();
-            showSuccessToast('Action completed successfully!');
+            showToast(successMessage, true);
         };
-
         overlay.onclick = (e) => { if (e.target === overlay) closePopup(); };
     }
 
-    // ================== الدالتان المطلوبتان ==================
+    // ===== دالة showToast العامة =====
+    function showToast(message, isSuccess = true) {
+        const toast = document.createElement('div');
+        toast.innerHTML = `
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <i class="fa-solid fa-${isSuccess ? 'check-circle' : 'exclamation-triangle'}" style="font-size: 24px; color: ${isSuccess ? '#4CAF50' : '#f44336'}"></i>
+                <div>
+                    <strong style="font-size: 16px;">${message}</strong>
+                </div>
+            </div>
+        `;
+        toast.style.position = 'fixed';
+        toast.style.top = '50%';
+        toast.style.left = '50%';
+        toast.style.transform = 'translate(-50%, -50%) scale(0.9)';
+        toast.style.backgroundColor = 'var(--card-bg, #fff)';
+        toast.style.color = 'var(--text-color, #333)';
+        toast.style.padding = '15px 25px';
+        toast.style.borderRadius = '50px';
+        toast.style.boxShadow = '0 20px 35px rgba(0,0,0,0.2)';
+        toast.style.zIndex = '10000';
+        toast.style.fontFamily = "'Poppins', sans-serif";
+        toast.style.border = `2px solid ${isSuccess ? '#4CAF50' : '#f44336'}`;
+        toast.style.opacity = '0';
+        toast.style.transition = 'all 0.25s cubic-bezier(0.34, 1.2, 0.64, 1)';
+        toast.style.fontWeight = '500';
+        toast.style.textAlign = 'center';
+        toast.style.minWidth = '280px';
+
+        document.body.appendChild(toast);
+
+        setTimeout(() => {
+            toast.style.opacity = '1';
+            toast.style.transform = 'translate(-50%, -50%) scale(1)';
+        }, 20);
+
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translate(-50%, -50%) scale(0.95)';
+            setTimeout(() => {
+                if (toast && toast.parentNode) toast.remove();
+            }, 250);
+        }, 3000);
+    }
+
+    // ===== دالة الموافقة على مراجعة واحدة =====
     function approveReview(id) {
-        showConfirmPopup('Are you sure you want to APPROVE this review?', () => {
-            // هنا مكان الكود اللي بدك إياه بعد التأكيد (بدون حذف فعلي)
-            console.log(`Review ${id} approved (demo)`);
-            // يمكنك تحديث واجهة المستخدم هنا، مثلاً تغيير لون الصف أو تعطيل الأزرار
-            const row = document.querySelector(`tr[data-review-id="${id}"]`);
-            if (row) {
-                row.style.backgroundColor = '#e8f5e9';
-                row.querySelector('.status-badge').innerText = 'Approved';
+        showConfirmPopup('Approve this review? It will be visible to customers.', async () => {
+            const success = await updateReviewStatus(id, 'approved');
+            if (success) {
+                const index = reviewsArray.findIndex(r => r.id == id);
+                if (index !== -1) reviewsArray[index].status = 'approved';
+                filterReviews();
+            } else {
+                showToast('Failed to approve review in database', false);
             }
-        }, 'Review approved');
+        }, 'Review approved successfully!');
     }
 
+    // ===== دالة رفض مراجعة واحدة =====
     function rejectReview(id) {
-        showConfirmPopup('Are you sure you want to REJECT this review?', () => {
-            console.log(`Review ${id} rejected (demo)`);
-            const row = document.querySelector(`tr[data-review-id="${id}"]`);
-            if (row) {
-                row.style.backgroundColor = '#ffebee';
-                row.querySelector('.status-badge').innerText = 'Rejected';
+        showConfirmPopup('Reject this review? It will not be shown.', async () => {
+            const success = await updateReviewStatus(id, 'rejected');
+            if (success) {
+                const index = reviewsArray.findIndex(r => r.id == id);
+                if (index !== -1) reviewsArray[index].status = 'rejected';
+                filterReviews();
+            } else {
+                showToast('Failed to reject review in database', false);
             }
-        }, 'Review rejected');
+        }, 'Review rejected successfully!');
     }
 
-
-
+    // ===== دالة حذف مراجعة واحدة =====
     function deleteReview(id) {
-        showAdminConfirm('Are you sure you want to delete this review?', () => {})
+        showConfirmPopup('Permanently delete this review? This cannot be undone.', async () => {
+            const success = await deleteReviewFromDB(id);
+            if (success) {
+                const index = reviewsArray.findIndex(r => r.id == id);
+                if (index !== -1) reviewsArray.splice(index, 1);
+                filterReviews();
+            }
+        }, 'Review deleted successfully!');
     }
 
-    function exportReviews() {
-        alert('Export reviews feature (Demo)');
-    }
-
-    function settingsReviews() {
-        alert('Review settings (Demo)');
-    }
-
-    function bulkApprove() {
-        let selected = [];
+    // ===== دالة الموافقة الجماعية (Bulk Approve) =====
+    async function bulkApprove() {
+        const selected = [];
         document.querySelectorAll('.review-checkbox:checked').forEach(cb => {
             selected.push(cb.value);
         });
 
-        if(selected.length === 0) {
+        if (selected.length === 0) {
             alert('Please select at least one review');
             return;
         }
 
-        alert('Approved ' + selected.length + ' reviews (Demo)');
+        showConfirmPopup(
+            `Are you sure you want to approve ${selected.length} review(s)?`,
+            async () => {
+                const result = await bulkApproveFromDB(selected);
+                if (result.success) {
+                    for (const id of selected) {
+                        const index = reviewsArray.findIndex(r => r.id == id);
+                        if (index !== -1) {
+                            reviewsArray[index].status = 'approved';
+                        }
+                    }
+                    filterReviews();
+                    showToast(result.message, true);
+                } else {
+                    showToast(result.message || 'Failed to approve reviews', false);
+                }
+            },
+            'Approving reviews...'
+        );
     }
 
-    function bulkDelete() {
-        let selected = [];
+    // ===== دالة الحذف الجماعي (Bulk Delete) =====
+    async function bulkDelete() {
+        const selected = [];
         document.querySelectorAll('.review-checkbox:checked').forEach(cb => {
             selected.push(cb.value);
         });
 
-        if(selected.length === 0) {
+        if (selected.length === 0) {
             alert('Please select at least one review');
             return;
         }
 
-        showAdminConfirm('Are you sure you want to delete these ' + selected.length + ' reviews?', () => {})
+        showConfirmPopup(
+            `⚠️ WARNING: You are about to permanently delete ${selected.length} review(s). This action cannot be undone!`,
+            async () => {
+                const result = await bulkDeleteFromDB(selected);
+                if (result.success) {
+                    for (const id of selected) {
+                        const index = reviewsArray.findIndex(r => r.id == id);
+                        if (index !== -1) {
+                            reviewsArray.splice(index, 1);
+                        }
+                    }
+                    filterReviews();
+                    showToast(result.message, true);
+
+                    const selectAll = document.getElementById('selectAll');
+                    if (selectAll) selectAll.checked = false;
+                } else {
+                    showToast(result.message || 'Failed to delete reviews', false);
+                }
+            },
+            'Deleting reviews...'
+        );
     }
 
-    // تحديد كل المراجعات
+    // ===== تحديد كل المراجعات =====
     document.getElementById('selectAll')?.addEventListener('change', function() {
-        document.querySelectorAll('.review-checkbox').forEach(cb => {
-            cb.checked = this.checked;
-        });
+        document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = this.checked);
     });
 </script>
 
 <script>
     (function() {
         const themeSwitchMain = document.getElementById('themeSwitchSidebar');
-
         function applyTheme(isDark) {
-            if (isDark) {
-                document.body.classList.add('dark-mode');
-                if (themeSwitchMain) themeSwitchMain.checked = true;
-            } else {
-                document.body.classList.remove('dark-mode');
-                if (themeSwitchMain) themeSwitchMain.checked = false;
-            }
+            if (isDark) { document.body.classList.add('dark-mode'); if (themeSwitchMain) themeSwitchMain.checked = true; }
+            else { document.body.classList.remove('dark-mode'); if (themeSwitchMain) themeSwitchMain.checked = false; }
         }
-
         const savedTheme = localStorage.getItem('theme');
-        if (savedTheme === 'dark') applyTheme(true);
-        else applyTheme(false);
-
-        if (themeSwitchMain) {
-            themeSwitchMain.addEventListener('change', function(e) {
-                const isDark = this.checked;
-                applyTheme(isDark);
-                localStorage.setItem('theme', isDark ? 'dark' : 'light');
-            });
-        }
+        if (savedTheme === 'dark') applyTheme(true); else applyTheme(false);
+        if (themeSwitchMain) themeSwitchMain.addEventListener('change', function(e) { applyTheme(this.checked); localStorage.setItem('theme', this.checked ? 'dark' : 'light'); });
     })();
 </script>
 </body>

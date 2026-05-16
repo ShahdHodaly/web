@@ -1,6 +1,28 @@
 <?php
 // includes/sidebar.php
 $current_page = basename($_SERVER['PHP_SELF']);
+
+// جلب معلومات المستخدم الحالي من الجلسة أو قاعدة البيانات
+$user_name = $_SESSION['user_name'] ?? 'Admin';
+$user_role = $_SESSION['user_role'] ?? 'Admin';
+$user_avatar = $_SESSION['user_avatar'] ?? 'https://ui-avatars.com/api/?name=' . urlencode($user_name) . '&background=F8BBD0&color=000&size=40';
+
+// إذا كانت الجلسة تحتوي على user_id، يمكن جلب الصورة من قاعدة البيانات
+if (isset($_SESSION['user_id']) && empty($_SESSION['user_avatar'])) {
+    require_once __DIR__ . '/../db.php';
+    try {
+        $pdo = getDB();
+        $stmt = $pdo->prepare("SELECT avatar FROM users WHERE user_id = ?");
+        $stmt->execute([$_SESSION['user_id']]);
+        $user = $stmt->fetch();
+        if ($user && !empty($user['avatar'])) {
+            $user_avatar = $user['avatar'];
+            $_SESSION['user_avatar'] = $user_avatar;
+        }
+    } catch (Exception $e) {
+        // تجاهل الأخطاء، استخدم الصورة الافتراضية
+    }
+}
 ?>
 <!-- ========== LEFT SIDEBAR (static, same on all admin pages) ========== -->
 <aside class="admin-sidebar">
@@ -8,11 +30,18 @@ $current_page = basename($_SERVER['PHP_SELF']);
         <h2><i class="fa-solid fa-crown" style="font-size: 24px; margin-right: 6px;"></i> Admin</h2>
         <p>Dashboard · Teddy control</p>
     </div>
-    <!-- Profile Link -->
-    <div class="profile-link-item" style="margin-bottom: 15px; padding: 0 24px;">
-        <a href="profile-admin.php" class="<?= $current_page == 'profile.php' ? 'active-link' : '' ?>" style="display: flex; align-items: center; gap: 14px; padding: 12px 18px; border-radius: 40px; color: var(--nav-text); font-weight: 500;">
-            <i class="fa-solid fa-user-circle" style="width: 24px; font-size: 1.2rem;"></i>
-            My Profile
+
+    <!-- Profile Section with Avatar -->
+    <div class="profile-section-sidebar">
+        <div class="profile-avatar-small">
+            <img src="<?= htmlspecialchars($user_avatar) ?>" alt="<?= htmlspecialchars($user_name) ?>" onerror="this.src='https://ui-avatars.com/api/?name=<?= urlencode($user_name) ?>&background=F8BBD0&color=000&size=40'">
+            <div class="profile-info-small">
+                <div class="profile-name-small"><?= htmlspecialchars($user_name) ?></div>
+                <div class="profile-role-small"><?= htmlspecialchars($user_role) ?></div>
+            </div>
+        </div>
+        <a href="profile-admin.php" class="profile-link-btn <?= $current_page == 'profile-admin.php' ? 'active-link' : '' ?>">
+            <i class="fa-solid fa-user-circle"></i> My Profile
         </a>
     </div>
 
@@ -72,9 +101,11 @@ $current_page = basename($_SERVER['PHP_SELF']);
     </nav>
 
     <div class="sidebar-footer">
-        <!-- Logout link -->
-        <div class="logout-item" style="margin-bottom: 18px;">
-            <a href="auth.php"><i class="fa-solid fa-sign-out-alt"></i> Logout</a>
+        <!-- Logout link with popup -->
+        <div class="logout-item">
+            <a href="javascript:void(0)" onclick="showLogoutConfirm()">
+                <i class="fa-solid fa-sign-out-alt"></i> Logout
+            </a>
         </div>
 
         <!-- Dark mode toggle -->
@@ -91,37 +122,80 @@ $current_page = basename($_SERVER['PHP_SELF']);
 </aside>
 
 <style>
-    /* Profile Link in Sidebar */
-    .profile-link-item a {
+    /* Profile Section in Sidebar */
+    .profile-section-sidebar {
+        padding: 20px 24px;
+        border-bottom: 1px solid rgba(128,128,128,0.15);
+        margin-bottom: 10px;
+    }
+
+    .profile-avatar-small {
         display: flex;
         align-items: center;
-        gap: 14px;
-        padding: 12px 18px;
+        gap: 12px;
+        margin-bottom: 15px;
+    }
+
+    .profile-avatar-small img {
+        width: 45px;
+        height: 45px;
+        border-radius: 50%;
+        object-fit: cover;
+        border: 2px solid var(--pink);
+    }
+
+    .profile-info-small {
+        flex: 1;
+    }
+
+    .profile-name-small {
+        font-weight: 600;
+        color: var(--text-color);
+        font-size: 14px;
+    }
+
+    .profile-role-small {
+        font-size: 11px;
+        color: var(--secondary-text);
+    }
+
+    .profile-link-btn {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 16px;
         border-radius: 40px;
         color: var(--nav-text);
         font-weight: 500;
+        font-size: 14px;
         transition: all 0.3s ease;
+        background: var(--card-bg);
+        margin-top: 5px;
+        text-decoration: none;
     }
 
-    .profile-link-item a:hover {
+    .profile-link-btn i {
+        width: 20px;
+        font-size: 1rem;
+        color: var(--primary);
+    }
+
+    .profile-link-btn:hover {
         background: var(--pink);
         color: #000;
-        transform: translateX(6px);
+        transform: translateX(5px);
     }
 
-    .profile-link-item a.active-link {
+    .profile-link-btn:hover i {
+        color: #000;
+    }
+
+    .profile-link-btn.active-link {
         background: var(--primary);
         color: #fff;
     }
 
-    .profile-link-item a i {
-        width: 24px;
-        font-size: 1.2rem;
-        color: var(--primary);
-    }
-
-    .profile-link-item a:hover i,
-    .profile-link-item a.active-link i {
+    .profile-link-btn.active-link i {
         color: #fff;
     }
 
@@ -166,7 +240,7 @@ $current_page = basename($_SERVER['PHP_SELF']);
 
     .sidebar-nav {
         flex: 1;
-        padding: 25px 16px 20px 16px;
+        padding: 10px 16px 20px 16px;
     }
 
     .sidebar-nav ul {
@@ -187,11 +261,12 @@ $current_page = basename($_SERVER['PHP_SELF']);
         border-radius: 40px;
         color: var(--nav-text);
         font-weight: 500;
-        font-size: 16px;
+        font-size: 15px;
         transition: all 0.25s ease;
         position: relative;
         overflow: hidden;
         z-index: 1;
+        text-decoration: none;
     }
 
     .sidebar-nav a i {
@@ -286,6 +361,8 @@ $current_page = basename($_SERVER['PHP_SELF']);
         padding: 12px 18px;
         border-radius: 40px;
         transition: all 0.25s ease;
+        text-decoration: none;
+        cursor: pointer;
     }
 
     .logout-item a:hover {
@@ -329,7 +406,7 @@ $current_page = basename($_SERVER['PHP_SELF']);
     .sidebar-nav a:hover,
     button:hover,
     .page-item:hover {
-        transition: all 0.2s ease; /* hover أسرع شوي */
+        transition: all 0.2s ease;
     }
 
     /* =========================================
@@ -378,7 +455,7 @@ $current_page = basename($_SERVER['PHP_SELF']);
     }
 
     .theme-toggle input {
-        display: none; /* إخفاء الشيك بوكس الأصلي */
+        display: none;
     }
 
     .toggle-track {
@@ -469,6 +546,121 @@ $current_page = basename($_SERVER['PHP_SELF']);
         color: #fff !important;
     }
 
+    /* Popup Styles */
+    .admin-confirm-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 0.6);
+        backdrop-filter: blur(3px);
+        z-index: 9998;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        transition: opacity 0.3s ease;
+    }
+
+    .admin-confirm-popup {
+        background-color: var(--card-bg);
+        color: var(--text-color);
+        border-radius: 28px;
+        padding: 28px 24px;
+        max-width: 420px;
+        width: 90%;
+        box-shadow: 0 25px 45px rgba(0, 0, 0, 0.25);
+        text-align: center;
+        font-family: 'Poppins', sans-serif;
+        transform: scale(0.9);
+        transition: transform 0.25s ease;
+        border: 1px solid var(--pink);
+    }
+
+    .admin-confirm-popup .popup-icon {
+        font-size: 58px;
+        margin-bottom: 12px;
+    }
+
+    .admin-confirm-popup h3 {
+        font-size: 24px;
+        font-weight: 600;
+        margin-bottom: 12px;
+    }
+
+    .admin-confirm-popup p {
+        font-size: 16px;
+        color: var(--secondary-text);
+        margin-bottom: 28px;
+        line-height: 1.5;
+    }
+
+    .admin-confirm-popup .popup-buttons {
+        display: flex;
+        gap: 15px;
+        justify-content: center;
+    }
+
+    .admin-confirm-popup .btn-cancel {
+        background: transparent;
+        border: 2px solid var(--pink);
+        padding: 10px 24px;
+        border-radius: 40px;
+        font-weight: 600;
+        cursor: pointer;
+        color: var(--text-color);
+        transition: all 0.2s;
+    }
+
+    .admin-confirm-popup .btn-cancel:hover {
+        background: var(--pink);
+        color: #000;
+        transform: translateY(-2px);
+    }
+
+    .admin-confirm-popup .btn-confirm {
+        background: #d9534f;
+        border: none;
+        padding: 10px 28px;
+        border-radius: 40px;
+        font-weight: 600;
+        color: white;
+        cursor: pointer;
+        box-shadow: 0 4px 8px rgba(217, 83, 79, 0.3);
+        transition: all 0.2s;
+    }
+
+    .admin-confirm-popup .btn-confirm:hover {
+        background: #c9302c;
+        transform: translateY(-2px);
+    }
+
+    /* Toast for success message */
+    .admin-success-toast {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%) scale(0.9);
+        background-color: var(--card-bg);
+        color: var(--text-color);
+        padding: 18px 28px;
+        border-radius: 60px;
+        box-shadow: 0 20px 35px rgba(0, 0, 0, 0.2);
+        z-index: 10000;
+        font-family: 'Poppins', sans-serif;
+        border: 2px solid #28a745;
+        backdrop-filter: blur(12px);
+        opacity: 0;
+        transition: all 0.25s cubic-bezier(0.34, 1.2, 0.64, 1);
+        font-weight: 500;
+        text-align: center;
+        min-width: 280px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+
     /* =========================================
        Responsive
     ========================================= */
@@ -483,5 +675,136 @@ $current_page = basename($_SERVER['PHP_SELF']);
         .sidebar-nav .active-link::before {
             left: -8px;
         }
+
+        .profile-section-sidebar {
+            padding: 15px 20px;
+        }
     }
 </style>
+
+<script>
+    // ========== Logout Popup Function ==========
+    function showLogoutConfirm() {
+        // Create overlay
+        const overlay = document.createElement('div');
+        overlay.className = 'admin-confirm-overlay';
+
+        // Create popup
+        const popup = document.createElement('div');
+        popup.className = 'admin-confirm-popup';
+
+        popup.innerHTML = `
+            <div class="popup-icon">🚪</div>
+            <h3>Logout Confirmation</h3>
+            <p>Are you sure you want to logout? You will need to login again to access the dashboard.</p>
+            <div class="popup-buttons">
+                <button class="btn-cancel" id="logoutCancelBtn">Cancel</button>
+                <button class="btn-confirm" id="logoutConfirmBtn">Logout</button>
+            </div>
+        `;
+
+        overlay.appendChild(popup);
+        document.body.appendChild(overlay);
+
+        // Show animation
+        setTimeout(() => {
+            overlay.style.opacity = '1';
+            popup.style.transform = 'scale(1)';
+        }, 10);
+
+        // Close popup function
+        function closePopup() {
+            overlay.style.opacity = '0';
+            popup.style.transform = 'scale(0.9)';
+            setTimeout(() => {
+                if (overlay && overlay.parentNode) overlay.remove();
+            }, 250);
+        }
+
+        // Show success toast
+        function showSuccessToast() {
+            const toast = document.createElement('div');
+            toast.className = 'admin-success-toast';
+            toast.innerHTML = `
+                <i class="fa-solid fa-check-circle" style="font-size: 28px; color: #28a745;"></i>
+                <div>
+                    <strong style="font-size: 18px;">Logged out successfully!</strong>
+                    <div style="font-size: 13px;">Redirecting to login page...</div>
+                </div>
+            `;
+
+            document.body.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.opacity = '1';
+                toast.style.transform = 'translate(-50%, -50%) scale(1)';
+            }, 20);
+
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translate(-50%, -50%) scale(0.95)';
+                setTimeout(() => {
+                    if (toast && toast.parentNode) toast.remove();
+                }, 250);
+            }, 2000);
+        }
+
+        // Handle cancel button
+        const cancelBtn = popup.querySelector('#logoutCancelBtn');
+        cancelBtn.addEventListener('click', closePopup);
+
+        // Handle confirm button
+        const confirmBtn = popup.querySelector('#logoutConfirmBtn');
+        confirmBtn.addEventListener('click', function() {
+            closePopup();
+            showSuccessToast();
+
+            // Redirect to logout after toast
+            setTimeout(() => {
+                window.location.href = 'auth.php?logout=1';
+            }, 1500);
+        });
+
+        // Close when clicking overlay
+        overlay.addEventListener('click', function(e) {
+            if (e.target === overlay) closePopup();
+        });
+    }
+
+    // ========== Dark Mode Toggle ==========
+    (function() {
+        const themeSwitch = document.getElementById('themeSwitchSidebar');
+        if (!themeSwitch) return;
+
+        function applyTheme(isDark) {
+            if (isDark) {
+                document.body.classList.add('dark-mode');
+                themeSwitch.checked = true;
+            } else {
+                document.body.classList.remove('dark-mode');
+                themeSwitch.checked = false;
+            }
+        }
+
+        const savedTheme = localStorage.getItem('theme');
+        if (savedTheme === 'dark') {
+            applyTheme(true);
+        } else if (savedTheme === 'light') {
+            applyTheme(false);
+        } else {
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            applyTheme(prefersDark);
+        }
+
+        themeSwitch.addEventListener('change', function(e) {
+            const isDark = this.checked;
+            applyTheme(isDark);
+            localStorage.setItem('theme', isDark ? 'dark' : 'light');
+
+            document.body.style.transition = 'background-color 0.3s ease, color 0.2s ease';
+            setTimeout(() => {
+                document.body.style.transition = '';
+            }, 300);
+        });
+    })();
+</script>

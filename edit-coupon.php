@@ -2,23 +2,27 @@
 // edit-coupon.php
 session_start();
 
-// تضمين مصفوفة الكوبونات
-require_once 'coupons-array.php';
-
+// الاتصال بقاعدة البيانات
+require_once 'db.php';
+$pdo = getDB();
 // الحصول على ID الكوبون من الرابط
 $coupon_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
+// جلب بيانات الكوبون من الداتا بيز
+$stmt = $pdo->prepare("SELECT * FROM Coupons WHERE coupon_id = ?");
+$stmt->execute([$coupon_id]);
+$coupon = $stmt->fetch(PDO::FETCH_ASSOC);
+
 // التحقق من وجود الكوبون
-if (!isset($coupons[$coupon_id])) {
+if (!$coupon) {
     $_SESSION['error'] = 'Coupon not found';
     header("Location: coupons.php");
     exit;
 }
 
-$coupon = $coupons[$coupon_id];
 $pageTitle = "Edit " . $coupon['code'] . " | Teddy Shop";
 
-// متغيرات النموذج
+// متغيرات النموذج (نجلب البيانات الحالية من الداتا بيز)
 $code = $coupon['code'];
 $description = $coupon['description'];
 $discount_type = $coupon['discount_type'];
@@ -29,13 +33,15 @@ $usage_limit = $coupon['usage_limit'];
 $start_date = $coupon['start_date'];
 $expiry_date = $coupon['expiry_date'];
 $status = $coupon['status'];
-$applicable_products = $coupon['applicable_products'];
-$applicable_categories = $coupon['applicable_categories'];
+
+// هالحقولين مو موجوين بالداتا بيز، فعطيتهم قيم افتراضية عشان الفرونت
+$applicable_products = 'all';
+$applicable_categories = 'all';
 
 $errors = [];
 $success = false;
 
-// معالجة إرسال النموذج
+// معالجة إرسال النموذج (تحديث البيانات)
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $code = strtoupper(trim($_POST['code'] ?? ''));
     $description = trim($_POST['description'] ?? '');
@@ -53,6 +59,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // التحقق من صحة البيانات
     if (empty($code)) {
         $errors[] = 'Coupon code is required';
+    }
+
+    // التحقق من تكرار الكود (مع استثناء الكوبون الحالي)
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM Coupons WHERE code = ? AND coupon_id != ?");
+    $stmt->execute([$code, $coupon_id]);
+    if ($stmt->fetchColumn() > 0) {
+        $errors[] = 'Coupon code already exists for another coupon';
     }
 
     if (empty($description)) {
@@ -83,26 +96,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = 'Expiry date cannot be before start date';
     }
 
-    // إذا لم يكن هناك أخطاء
+    // إذا لم يكن هناك أخطاء، حدث قاعدة البيانات
     if (empty($errors)) {
-        // في التطبيق الحقيقي، ستقوم بتحديث قاعدة البيانات
-        // للتجربة، نعرض رسالة نجاح
+        try {
+            $stmt = $pdo->prepare("UPDATE Coupons SET 
+                                   code = ?, description = ?, discount_type = ?, discount_value = ?, 
+                                   min_order = ?, max_discount = ?, usage_limit = ?, start_date = ?, 
+                                   expiry_date = ?, status = ? 
+                                   WHERE coupon_id = ?");
+            $stmt->execute([
+                    $code, $description, $discount_type, $discount_value,
+                    $min_order, $max_discount, $usage_limit, $start_date, $expiry_date, $status,
+                    $coupon_id
+            ]);
 
-        $success = true;
+            $success = true;
 
-        // تحديث المتغيرات المعروضة
-        $coupon['code'] = $code;
-        $coupon['description'] = $description;
-        $coupon['discount_type'] = $discount_type;
-        $coupon['discount_value'] = $discount_value;
-        $coupon['min_order'] = $min_order;
-        $coupon['max_discount'] = $max_discount;
-        $coupon['usage_limit'] = $usage_limit;
-        $coupon['start_date'] = $start_date;
-        $coupon['expiry_date'] = $expiry_date;
-        $coupon['status'] = $status;
-        $coupon['applicable_products'] = $applicable_products;
-        $coupon['applicable_categories'] = $applicable_categories;
+            // تحديث المتغيرات المعروضة بالقيم الجديدة
+            $coupon['code'] = $code;
+            $coupon['description'] = $description;
+            $coupon['discount_type'] = $discount_type;
+            $coupon['discount_value'] = $discount_value;
+            $coupon['min_order'] = $min_order;
+            $coupon['max_discount'] = $max_discount;
+            $coupon['usage_limit'] = $usage_limit;
+            $coupon['start_date'] = $start_date;
+            $coupon['expiry_date'] = $expiry_date;
+            $coupon['status'] = $status;
+
+        } catch (PDOException $e) {
+            $errors[] = 'Database error: ' . $e->getMessage();
+        }
     }
 }
 ?>
@@ -400,8 +424,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <label><i class="fa-solid fa-tags"></i> Applicable Categories</label>
                     <select name="applicable_categories" class="form-control">
                         <option value="all" <?= $applicable_categories == 'all' ? 'selected' : '' ?>>All Categories</option>
-                        <option value="summer" <?= $applicable_categories == 'summer' ? 'selected' : '' ?>>Summer Collection</option>
-                        <option value="premium" <?= $applicable_categories == 'premium' ? 'selected' : '' ?>>Premium Items</option>
                     </select>
                     <div class="help-text">Select which categories this coupon applies to</div>
                 </div>

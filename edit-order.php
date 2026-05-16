@@ -1,35 +1,131 @@
 <?php
 // edit-order.php
 session_start();
+require_once 'db.php';
 
-// تضمين المصفوفات
-require_once 'products.php';
-require_once 'orders-array.php';
+$pdo = getDB();
 
 // الحصول على ID الطلب من الرابط
 $order_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
+// جلب الطلب من قاعدة البيانات مع معلومات المستخدم
+$stmt = $pdo->prepare("
+    SELECT 
+        o.order_id,
+        o.order_number,
+        o.user_id,
+        o.status,
+        o.payment_method,
+        o.subtotal,
+        o.discount_amount,
+        o.gift_wrap_price,
+        o.total,
+        o.is_gift,
+        o.gift_message,
+        o.gift_box,
+        o.notes,
+        o.created_at,
+        u.name as customer_name,
+        u.email as customer_email
+    FROM orders o
+    JOIN users u ON o.user_id = u.user_id
+    WHERE o.order_id = ?
+");
+$stmt->execute([$order_id]);
+$orderData = $stmt->fetch(PDO::FETCH_ASSOC);
+
 // التحقق من وجود الطلب
-if (!isset($orders[$order_id])) {
+if (!$orderData) {
     $_SESSION['error'] = 'Order not found';
     header("Location: orders.php");
     exit;
 }
 
-$order = $orders[$order_id];
-$pageTitle = "Edit Order " . $order['order_number'] . " | Teddy Shop";
+// جلب عناصر الطلب الحالية
+$stmt = $pdo->prepare("
+    SELECT 
+        oi.product_id,
+        oi.quantity,
+        oi.unit_price,
+        p.name as product_name,
+        p.price as product_price,
+        p.image as product_image,
+        c.name as category_name
+    FROM order_items oi
+    JOIN products p ON oi.product_id = p.product_id
+    JOIN categories c ON p.category_id = c.category_id
+    WHERE oi.order_id = ?
+");
+$stmt->execute([$order_id]);
+$currentOrderItems = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// متغيرات النموذج
-$customer_name = $order['customer'];
-$customer_email = $order['customer_email'];
-$payment_method = $order['payment_method'];
-$status = $order['status'];
-$notes = $order['notes'] ?? '';
-$selected_products = $order['products'];
-$is_gift = $order['is_gift'] ?? 0;
-$gift_box = $order['gift_box'] ?? '';
-$gift_message = $order['gift_message'] ?? '';
-$gift_wrap_price = $order['gift_wrap_price'] ?? 0;
+// جلب جميع المنتجات للجدول
+$stmt = $pdo->query("
+    SELECT 
+        p.product_id,
+        p.name,
+        p.price,
+        p.image,
+        c.name as category_name
+    FROM products p
+    JOIN categories c ON p.category_id = c.category_id
+    ORDER BY p.product_id
+");
+$allProducts = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// تحويل المنتجات إلى مصفوفة للتنسيق
+$products = [];
+foreach ($allProducts as $product) {
+    $products[$product['product_id']] = [
+            'id' => $product['product_id'],
+            'name' => $product['name'],
+            'price' => (float)$product['price'],
+            'image' => $product['image'] ?: 'images/placeholder.png',
+            'category' => $product['category_name']
+    ];
+}
+
+// تحويل عناصر الطلب الحالية إلى مصفوفة للتنسيق
+$selected_products = [];
+foreach ($currentOrderItems as $item) {
+    $selected_products[] = [
+            'id' => $item['product_id'],
+            'name' => $item['product_name'],
+            'price' => (float)$item['unit_price'],
+            'quantity' => (int)$item['quantity'],
+            'subtotal' => (float)$item['unit_price'] * $item['quantity'],
+            'image' => $item['product_image'] ?: 'placeholder.png'
+    ];
+}
+
+// ── استخراج أرقام الكوستوم من notes ──
+$customIds = [];
+$noteParts = explode(' | ', $orderData['notes'] ?? '');
+foreach ($noteParts as $part) {
+    if (strpos($part, 'custom:') === 0) {
+        $ids = explode(',', substr($part, 7));
+        $customIds = array_map('intval', array_filter($ids));
+    }
+}
+
+// جلب بيانات الدببة المخصصة
+$customItems = [];
+$customSubtotal = 0;
+if (!empty($customIds)) {
+    $cPlaceholders = implode(',', array_fill(0, count($customIds), '?'));
+    $stmtC = $pdo->prepare("
+        SELECT custom_id, custom_name AS name, total_price, config_json, quantity
+        FROM custom_teddies
+        WHERE custom_id IN ($cPlaceholders)
+    ");
+    $stmtC->execute($customIds);
+    $customItems = $stmtC->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($customItems as $cItem) {
+        $cQty = (int)($cItem['quantity'] ?? 1);
+        $customSubtotal += (float)$cItem['total_price'] * $cQty;
+    }
+}
 
 // أسعار التغليف الثابتة
 $gift_prices = [
@@ -38,6 +134,17 @@ $gift_prices = [
         'teddywrap.png' => 10.00,
         'premium.png' => 15.00
 ];
+
+// متغيرات النموذج
+$customer_name = $orderData['customer_name'];
+$customer_email = $orderData['customer_email'];
+$payment_method = $orderData['payment_method'];
+$status = $orderData['status'];
+$notes = $orderData['notes'] ?? '';
+$is_gift = (int)$orderData['is_gift'];
+$gift_box = $orderData['gift_box'] ?? '';
+$gift_message = $orderData['gift_message'] ?? '';
+$gift_wrap_price = (float)$orderData['gift_wrap_price'];
 
 $errors = [];
 $success = false;
@@ -119,41 +226,110 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $errors[] = 'Please select valid products with quantities';
         }
 
-        // حساب المجموع الكلي مع إضافة سعر التغليف إذا وجد
-        $total = $subtotal + $gift_wrap_price;
+        // حساب المجموع الكلي مع إضافة سعر التغليف والكوستوم
+        $total = $subtotal + $customSubtotal + $gift_wrap_price;
     }
 
-    // إذا لم يكن هناك أخطاء، قم بتحديث الطلب
+    // إذا لم يكن هناك أخطاء، قم بتحديث الطلب في قاعدة البيانات
     if (empty($errors)) {
-        // تحديث الطلب (في التطبيق الحقيقي، ستقوم بتحديث قاعدة البيانات)
-        // للتجربة، نعرض رسالة نجاح فقط
+        try {
+            $pdo->beginTransaction();
 
-        // تحديث مصفوفة الطلب مؤقتاً
-        $orders[$order_id] = [
-                'order_number' => $order['order_number'],
-                'customer' => $customer_name,
-                'customer_email' => $customer_email,
-                'date' => $order['date'],
-                'subtotal' => $subtotal,
-                'total' => $total,
-                'status' => $status,
-                'payment_method' => $payment_method,
-                'items_count' => $items_count,
-                'products' => $products_list,
-                'notes' => $notes,
-                'is_gift' => $is_gift,
-                'gift_box' => $gift_box,
-                'gift_message' => $gift_message,
-                'gift_wrap_price' => $gift_wrap_price
-        ];
+            // تحديث أو إنشاء المستخدم
+            $stmt = $pdo->prepare("SELECT user_id FROM users WHERE email = ?");
+            $stmt->execute([$customer_email]);
+            $user = $stmt->fetch();
 
-        $success = true;
+            if ($user) {
+                $user_id = $user['user_id'];
+                // تحديث اسم المستخدم إذا تغير
+                $stmt = $pdo->prepare("UPDATE users SET name = ? WHERE user_id = ?");
+                $stmt->execute([$customer_name, $user_id]);
+            } else {
+                // إنشاء مستخدم جديد
+                $stmt = $pdo->prepare("
+                    INSERT INTO users (name, email, password, role, status, created_at) 
+                    VALUES (?, ?, MD5('password123'), 'Customer', 'active', NOW())
+                    RETURNING user_id
+                ");
+                $stmt->execute([$customer_name, $customer_email]);
+                $user_id = $stmt->fetchColumn();
+            }
 
-        // تحديث المتغيرات المعروضة
-        $order = $orders[$order_id];
-        $selected_products = $products_list;
+            // الحفاظ على أرقام الكوستوم في notes
+            $finalNotes = $notes;
+            if (!empty($customIds)) {
+                // إزالة custom: القديم إذا موجود
+                $finalNotes = preg_replace('/\s*\|\s*custom:\d+(,\d+)*/', '', $finalNotes);
+                // إضافة custom: الجديد
+                $finalNotes .= " | custom:" . implode(',', $customIds);
+            }
+
+            // subtotal يشمل العادي + الكوستوم
+            $finalSubtotal = $subtotal + $customSubtotal;
+
+            // تحديث الطلب
+            $stmt = $pdo->prepare("
+                UPDATE orders 
+                SET user_id = ?, 
+                    status = ?, 
+                    payment_method = ?, 
+                    subtotal = ?,
+                    gift_wrap_price = ?,
+                    total = ?,
+                    is_gift = ?,
+                    gift_message = ?,
+                    gift_box = ?,
+                    notes = ?
+                WHERE order_id = ?
+            ");
+
+            $stmt->execute([
+                    $user_id,
+                    $status,
+                    $payment_method,
+                    $finalSubtotal,
+                    $gift_wrap_price,
+                    $total,
+                    $is_gift,
+                    $gift_message,
+                    $gift_box,
+                    $finalNotes,
+                    $order_id
+            ]);
+
+            // حذف عناصر الطلب القديمة
+            $stmt = $pdo->prepare("DELETE FROM order_items WHERE order_id = ?");
+            $stmt->execute([$order_id]);
+
+            // إضافة عناصر الطلب الجديدة
+            foreach ($products_list as $item) {
+                $stmt = $pdo->prepare("
+                    INSERT INTO order_items (order_id, product_id, quantity, unit_price) 
+                    VALUES (?, ?, ?, ?)
+                ");
+                $stmt->execute([
+                        $order_id,
+                        $item['id'],
+                        $item['quantity'],
+                        $item['price']
+                ]);
+            }
+
+            $pdo->commit();
+            $success = true;
+
+            // تحديث المتغيرات المعروضة
+            $selected_products = $products_list;
+
+        } catch (PDOException $e) {
+            $pdo->rollBack();
+            $errors[] = 'Database error: ' . $e->getMessage();
+        }
     }
 }
+
+$pageTitle = "Edit Order " . htmlspecialchars($orderData['order_number']) . " | Teddy Shop";
 ?>
 
 <!DOCTYPE html>
@@ -334,18 +510,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin-top: 4px;
         }
 
-        /* Status Select */
-        .status-select {
-            cursor: pointer;
-        }
-        .status-badge-sm {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 30px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-
         /* Products Table */
         .products-table-container {
             margin: 20px 0;
@@ -411,10 +575,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             padding-top: 15px;
             border-top: 2px solid var(--pink);
         }
-        .gift-summary {
-            color: var(--secondary-text);
-            font-size: 14px;
-        }
 
         .alert {
             padding: 12px 18px;
@@ -433,10 +593,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             background: rgba(244, 67, 54, 0.2);
             color: #F44336;
             border: 1px solid #F44336;
-        }
-        .alert-error ul {
-            margin: 0;
-            padding-left: 20px;
         }
 
         .form-buttons {
@@ -498,7 +654,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="form-header">
                 <h1><i class="fa-solid fa-pen-to-square"></i> Edit Order</h1>
                 <p>Update order information</p>
-                <div class="order-number">Order #: <?= htmlspecialchars($order['order_number']) ?></div>
+                <div class="order-number">Order #: <?= htmlspecialchars($orderData['order_number']) ?></div>
             </div>
 
             <?php if ($success): ?>
@@ -536,16 +692,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <div class="form-group">
                             <label><i class="fa-solid fa-credit-card"></i> Payment Method <span class="required">*</span></label>
                             <select name="payment_method" class="form-control" required>
-                                <option value="Credit Card" <?= $payment_method == 'Credit Card' ? 'selected' : '' ?>>Credit Card</option>
-                                <option value="PayPal" <?= $payment_method == 'PayPal' ? 'selected' : '' ?>>PayPal</option>
-                                <option value="Bank Transfer" <?= $payment_method == 'Bank Transfer' ? 'selected' : '' ?>>Bank Transfer</option>
-                                <option value="Cash on Delivery" <?= $payment_method == 'Cash on Delivery' ? 'selected' : '' ?>>Cash on Delivery</option>
+                                <option value="card" <?= $payment_method == 'card' ? 'selected' : '' ?>>Credit Card</option>
+                                <option value="paypal" <?= $payment_method == 'paypal' ? 'selected' : '' ?>>PayPal</option>
+                                <option value="cash" <?= $payment_method == 'cash' ? 'selected' : '' ?>>Cash on Delivery</option>
                             </select>
                         </div>
 
                         <div class="form-group">
                             <label><i class="fa-solid fa-tag"></i> Order Status <span class="required">*</span></label>
-                            <select name="status" class="form-control status-select" required>
+                            <select name="status" class="form-control" required>
                                 <option value="pending" <?= $status == 'pending' ? 'selected' : '' ?>>Pending</option>
                                 <option value="processing" <?= $status == 'processing' ? 'selected' : '' ?>>Processing</option>
                                 <option value="shipped" <?= $status == 'shipped' ? 'selected' : '' ?>>Shipped</option>
@@ -580,23 +735,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <label><i class="fa-solid fa-box-open"></i> Gift Box Style <span class="required">*</span></label>
                                 <div class="gift-boxes">
                                     <div class="gift-box-item <?= $gift_box == 'box.png' ? 'selected' : '' ?>" data-box="box.png" data-price="5.00" onclick="selectGiftBox(this, 'box.png', 5.00)">
-                                        <img src="images/box.png" class="gift-box-img" alt="Classic Box">
+                                        <img src="images/box.png" class="gift-box-img" alt="Classic Box" onerror="this.src='images/placeholder.png'">
                                         <div class="gift-box-name">Classic Box</div>
                                         <div class="gift-box-price">$5.00</div>
                                     </div>
                                     <div class="gift-box-item <?= $gift_box == 'heartsbag.png' ? 'selected' : '' ?>" data-box="heartsbag.png" data-price="7.50" onclick="selectGiftBox(this, 'heartsbag.png', 7.50)">
-                                        <img src="images/heartsbag.png" class="gift-box-img" alt="Heart Bag">
+                                        <img src="images/heartsbag.png" class="gift-box-img" alt="Heart Bag" onerror="this.src='images/placeholder.png'">
                                         <div class="gift-box-name">Heart Bag</div>
                                         <div class="gift-box-price">$7.50</div>
                                     </div>
                                     <div class="gift-box-item <?= $gift_box == 'teddywrap.png' ? 'selected' : '' ?>" data-box="teddywrap.png" data-price="10.00" onclick="selectGiftBox(this, 'teddywrap.png', 10.00)">
-                                        <img src="images/teddywrap.png" class="gift-box-img" alt="Teddy Wrap">
+                                        <img src="images/teddywrap.png" class="gift-box-img" alt="Teddy Wrap" onerror="this.src='images/placeholder.png'">
                                         <div class="gift-box-name">Teddy Wrap</div>
                                         <div class="gift-box-price">$10.00</div>
                                     </div>
                                 </div>
                                 <input type="hidden" name="gift_box" id="giftBoxInput" value="<?= htmlspecialchars($gift_box) ?>">
-                                <input type="hidden" name="gift_wrap_price" id="giftWrapPriceInput" value="<?= $gift_wrap_price ?>">
                                 <div class="help-text">
                                     <i class="fa-solid fa-info-circle"></i> Choose a gift box style - each style has a fixed price
                                 </div>
@@ -629,9 +783,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     $selected_qty = 0;
                                     $selected_subtotal = 0;
                                     foreach($selected_products as $selected) {
-                                        if ($selected['name'] == $product['name']) {
+                                        if ($selected['id'] == $id) {
                                             $selected_qty = $selected['quantity'];
-                                            $selected_subtotal = $selected['subtotal'] ?? ($product['price'] * $selected_qty);
+                                            $selected_subtotal = $selected['subtotal'];
                                             break;
                                         }
                                     }
@@ -642,10 +796,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                         </td>
                                         <td>
                                             <div style="display: flex; align-items: center; gap: 10px;">
-                                                <img src="<?= $product['image'] ?>" style="width: 40px; height: 40px; border-radius: 8px; object-fit: cover;">
+                                                <img src="<?= htmlspecialchars($product['image']) ?>" style="width: 40px; height: 40px; border-radius: 8px; object-fit: cover;" onerror="this.src='images/placeholder.png'">
                                                 <div>
-                                                    <strong><?= $product['name'] ?></strong>
-                                                    <div style="font-size: 11px; color: var(--secondary-text);"><?= $product['category'] ?></div>
+                                                    <strong><?= htmlspecialchars($product['name']) ?></strong>
+                                                    <div style="font-size: 11px; color: var(--secondary-text);"><?= htmlspecialchars($product['category']) ?></div>
                                                 </div>
                                             </div>
                                         </td>
@@ -660,15 +814,74 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             </table>
                         </div>
 
+                        <?php if (!empty($customItems)): ?>
+                            <h5 style="margin: 15px 0 10px; color: var(--text-color);">
+                                <i class="fa-solid fa-wand-magic-sparkles" style="color:var(--lavender);"></i>
+                                Custom Teddies
+                                <span style="background:var(--lavender); color:#fff; padding:2px 8px; border-radius:10px; font-size:10px; margin-left:6px;">Read-only</span>
+                            </h5>
+                            <table class="products-select-table" style="margin-bottom:15px;">
+                                <thead>
+                                <tr>
+                                    <th>Product</th>
+                                    <th>Price</th>
+                                    <th>Qty</th>
+                                    <th>Subtotal</th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                <?php foreach ($customItems as $cItem):
+                                    $cfg = $cItem['config_json'] ? json_decode($cItem['config_json'], true) : null;
+                                    $cQty = (int)($cItem['quantity'] ?? 1);
+                                    $cPrice = (float)$cItem['total_price'];
+                                    ?>
+                                    <tr class="custom-item-row" data-price="<?= $cPrice ?>" data-qty="<?= $cQty ?>">
+                                        <td>
+                                            <div style="display:flex; align-items:center; gap:10px;">
+                                                <div style="position:relative; width:40px; height:40px; flex-shrink:0;">
+                                                    <?php if ($cfg): ?>
+                                                        <img src="<?= htmlspecialchars($cfg['color']['img'] ?? 'images/brown.png') ?>"
+                                                             style="position:absolute; width:100%; height:100%; object-fit:contain; z-index:1;" alt="base">
+                                                        <?php if (!empty($cfg['outfit'])): ?>
+                                                            <img src="<?= htmlspecialchars($cfg['outfit']['img']) ?>"
+                                                                 style="position:absolute; width:50%; top:46%; left:40%; transform:translate(-50%,-50%); object-fit:contain; z-index:2;" alt="outfit">
+                                                        <?php endif; ?>
+                                                        <?php if (!empty($cfg['shoes'])): ?>
+                                                            <img src="<?= htmlspecialchars($cfg['shoes']['img']) ?>"
+                                                                 style="position:absolute; width:40%; top:75%; left:40%; transform:translate(-50%,-50%); object-fit:contain; z-index:3;" alt="shoes">
+                                                        <?php endif; ?>
+                                                        <?php if (!empty($cfg['acc'])): ?>
+                                                            <img src="<?= htmlspecialchars($cfg['acc']['img']) ?>"
+                                                                 style="position:absolute; width:26%; top:16%; left:10%; transform:translate(-50%,-50%); object-fit:contain; z-index:4;" alt="acc">
+                                                        <?php endif; ?>
+                                                    <?php else: ?>
+                                                        <img src="images/brown.png" style="width:100%; height:100%; object-fit:contain;" alt="teddy">
+                                                    <?php endif; ?>
+                                                </div>
+                                                <div>
+                                                    <strong><?= htmlspecialchars($cItem['name'] ?: 'Custom Teddy') ?></strong>
+                                                    <span style="background:var(--lavender); color:#fff; padding:1px 6px; border-radius:8px; font-size:9px; margin-left:4px;">Custom</span>
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td class="product-price">$<?= number_format($cPrice, 2) ?></td>
+                                        <td style="text-align:center;"><?= $cQty ?></td>
+                                        <td style="font-weight:600;">$<?= number_format($cPrice * $cQty, 2) ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        <?php endif; ?>
+
                         <!-- Order Summary -->
                         <div class="order-summary">
                             <div class="summary-row">
                                 <span>Items Count:</span>
-                                <span id="itemsCount"><?= $order['items_count'] ?></span>
+                                <span id="itemsCount"><?= array_sum(array_column($selected_products, 'quantity')) ?></span>
                             </div>
                             <div class="summary-row">
                                 <span>Subtotal:</span>
-                                <span id="subtotal">$<?= number_format($order['subtotal'] ?? $order['total'], 2) ?></span>
+                                <span id="subtotal">$<?= number_format($orderData['subtotal'], 2) ?></span>
                             </div>
                             <div class="summary-row" id="giftWrapRow" style="display: <?= ($is_gift == 1 && $gift_wrap_price > 0) ? 'flex' : 'none' ?>;">
                                 <span>Gift Wrap:</span>
@@ -676,7 +889,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             </div>
                             <div class="summary-row summary-total">
                                 <span>Total:</span>
-                                <span id="total">$<?= number_format($order['total'], 2) ?></span>
+                                <span id="total">$<?= number_format($orderData['total'], 2) ?></span>
                             </div>
                         </div>
                     </div>
@@ -697,6 +910,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 <script>
     let currentGiftPrice = <?= $gift_wrap_price ?>;
+    let customSubtotal = <?= $customSubtotal ?>;
 
     function updateSummary() {
         let itemsCount = 0;
@@ -723,66 +937,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         });
 
-        let total = subtotal + currentGiftPrice;
+        let total = subtotal + currentGiftPrice + customSubtotal;
 
-        document.getElementById('itemsCount').textContent = itemsCount;
-        document.getElementById('subtotal').textContent = '$' + subtotal.toFixed(2);
+        // إضافة عدد الدببة المخصصة
+        const customRows = document.querySelectorAll('.custom-item-row');
+        let customCount = 0;
+        customRows.forEach(row => {
+            customCount += parseInt(row.getAttribute('data-qty')) || 0;
+        });
+
+        document.getElementById('itemsCount').textContent = itemsCount + customCount;
+        document.getElementById('subtotal').textContent = '$' + (subtotal + customSubtotal).toFixed(2);
         document.getElementById('total').textContent = '$' + total.toFixed(2);
     }
 
-    // Gift box selection
     function selectGiftBox(element, boxValue, price) {
-        // Remove selected class from all boxes
         document.querySelectorAll('.gift-box-item').forEach(item => {
             item.classList.remove('selected');
         });
-
-        // Add selected class to clicked box
         element.classList.add('selected');
-
-        // Set hidden inputs
         document.getElementById('giftBoxInput').value = boxValue;
-        document.getElementById('giftWrapPriceInput').value = price;
-
-        // Update current gift price
         currentGiftPrice = price;
-
-        // Show gift wrap row and update amount
         const giftWrapRow = document.getElementById('giftWrapRow');
         const giftWrapAmount = document.getElementById('giftWrapAmount');
-
         giftWrapRow.style.display = 'flex';
         giftWrapAmount.textContent = '$' + price.toFixed(2);
-
-        // Update total
         updateSummary();
     }
 
-    // Toggle gift options
     function toggleGiftOptions(isGift) {
         const giftOptions = document.getElementById('giftOptions');
         const giftWrapRow = document.getElementById('giftWrapRow');
-
         if (isGift) {
             giftOptions.style.display = 'block';
         } else {
             giftOptions.style.display = 'none';
             giftWrapRow.style.display = 'none';
-
-            // Reset gift selection
             document.querySelectorAll('.gift-box-item').forEach(item => {
                 item.classList.remove('selected');
             });
             document.getElementById('giftBoxInput').value = '';
-            document.getElementById('giftWrapPriceInput').value = '0';
             currentGiftPrice = 0;
-
-            // Update total
             updateSummary();
         }
     }
 
-    // Enable/disable quantity inputs based on checkbox
     document.querySelectorAll('.product-select').forEach(checkbox => {
         checkbox.addEventListener('change', function() {
             const row = this.closest('tr');
@@ -800,7 +999,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         input.addEventListener('input', updateSummary);
     });
 
-    // Initial update
     updateSummary();
 </script>
 
